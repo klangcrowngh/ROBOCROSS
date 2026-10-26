@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#1d1f3f">
+  <title>Robo Cross</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <!-- the game always runs in a phone-shaped frame (full screen on phones) -->
+  <div id="app">
+  <div id="game"></div>
+  <div id="warns"></div>
+  <div id="danger"></div>
+
+  <div id="hud">
+    <div id="score">0</div>
+    <div id="best">РЕКОРД 0</div>
+    <div id="coins"><span class="coin-ico"></span><span id="coin-count">0</span></div>
+    <button id="mute" aria-label="Звук">🔊</button>
+    <button id="music" aria-label="Музыка">♫</button>
+    <button id="pausebtn" aria-label="Пауза">II</button>
+    <div id="toast"></div>
+  </div>
+
+  <div id="menu" class="screen">
+    <h1 class="logo"><span>ROBO</span><span class="y">CROSS</span></h1>
+    <img class="brand" src="assets/logo-white.svg" alt="RENT ROBOT">
+    <p class="hint">ТАПНИ, ЧТОБЫ БЕЖАТЬ</p>
+    <p class="sub">тап — вперёд · свайп — в любую сторону</p>
+  </div>
+
+  <div id="over" class="screen hidden">
+    <div class="panel">
+      <h2>СИСТЕМА<br>ОТКЛЮЧЕНА</h2>
+      <div id="reason"></div>
+      <div class="row"><span>СЧЁТ</span><b id="final-score">0</b></div>
+      <div class="row"><span>РЕКОРД</span><b id="final-best">0</b></div>
+      <div id="new-best" class="new hidden">★ НОВЫЙ РЕКОРД ★</div>
+      <button id="restart">ЕЩЁ РАЗ</button>
+    </div>
+  </div>
+
+  <div id="pause" class="screen hidden">
+    <div class="panel">
+      <h2 id="pause-title">ПАУЗА</h2>
+      <button id="resume" class="big">ПРОДОЛЖИТЬ</button>
+      <button id="newrun" class="ghost">НОВАЯ ИГРА</button>
+    </div>
+  </div>
+
+  <div id="loading" class="screen">ЗАГРУЗКА...</div>
+  </div>
+
+  <script type="module" src="js/game.js"></script>
+</body>
+</html>
