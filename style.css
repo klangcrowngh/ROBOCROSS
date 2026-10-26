@@ -413,8 +413,42 @@ body.in-garage #hud { display: none; }
 .ld-bar i { display: block; height: 100%; width: 4%; background: linear-gradient(90deg, #35e6ff, #ff4fd8, #ffd21f); transition: width .35s; }
 #ld-text { font-size: 10px; color: #fff; letter-spacing: 1px; }
 #ld-tip { font-size: 8px; line-height: 1.8; text-align: center; opacity: .7; min-height: 30px; }
-.mini.wires { background: rgba(4, 6, 20, .82); backdrop-filter: blur(3px); }
+.mini.wires {
+  background: radial-gradient(ellipse at 50% 40%, rgba(20, 24, 60, .78), rgba(4, 6, 20, .94));
+  backdrop-filter: blur(4px);
+  opacity: 0; transition: opacity .22s;
+}
+.mini.wires.in { opacity: 1; }
+.mini.wires.out { opacity: 0; }
 .mini.wires canvas { position: absolute; inset: 0; }
+
+/* engineer's dialog box */
+.dlg {
+  position: absolute; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+  display: flex; gap: 12px; align-items: stretch;
+  padding: 12px; cursor: pointer;
+  background: linear-gradient(rgba(24, 26, 58, .97), rgba(12, 13, 32, .98));
+  border: 3px solid var(--cyan); border-radius: 14px;
+  box-shadow: 0 0 0 3px #000, 0 0 24px rgba(53, 230, 255, .35);
+  transform: translateY(24px); opacity: 0; transition: transform .22s, opacity .22s;
+}
+.dlg.in { transform: none; opacity: 1; }
+.dlg.out { transform: translateY(24px); opacity: 0; }
+.dlg-face {
+  flex: none; width: 72px; height: 72px; border-radius: 10px; overflow: hidden;
+  background: radial-gradient(circle at 50% 35%, #3a4a9a, #141636);
+  border: 3px solid #000; box-shadow: inset 0 0 0 2px var(--yellow);
+}
+.dlg-face img { width: 100%; height: 100%; image-rendering: pixelated; }
+.dlg-body { position: relative; flex: 1; min-width: 0; }
+.dlg-name { font-size: 9px; color: var(--yellow); margin-bottom: 9px; text-shadow: 2px 2px 0 #000; }
+.dlg-text { font-size: 9px; line-height: 1.85; min-height: 52px; }
+.dlg-next {
+  position: absolute; right: 0; bottom: -2px; width: 12px; height: 8px; opacity: 0;
+  background: center / contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 4' shape-rendering='crispEdges'%3E%3Cpath fill='%2335e6ff' d='M0 0h6v1H0zM1 1h4v1H1zM2 2h2v1H2z'/%3E%3C/svg%3E");
+}
+.dlg.done .dlg-next { opacity: 1; animation: dlg-bob .6s ease-in-out infinite; }
+@keyframes dlg-bob { 50% { transform: translateY(3px); } }
 
 /* game over: bigger panel with the top 3 and the player's own place */
 #over .panel { width: min(92cqw, 400px); padding: 26px 22px 22px; }
