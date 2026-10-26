@@ -125,62 +125,207 @@ export function disposeBaked(group) {
   group.traverse((o) => { if (o.userData.baked) o.geometry.dispose(); });
 }
 
-// ---------------------------------------------------------------- robot (placeholder)
-export const PAL = { white: 0xeef0f6, light: 0xc9ccd8, dark: 0x3a3b46, black: 0x1f2028, yellow: 0xf5c116 };
+// ---------------------------------------------------------------- robot
+// Built to the proportions of the AgiBot reference model (agibot 3.glb), but from separate
+// parts so arms and legs can swing. Each robot owns its materials so the garage can recolor it.
+export const PAL = { white: 0xd9dce4, light: 0xbfc3cf, dark: 0x2a2b33, black: 0x1a1b21, yellow: 0xd6a124 };
 
-export function makeRobot() {
+// Second robot "Titan": slimmer silver body, dark visor with glowing eyes, red core in the chest.
+const PAL_TITAN = { white: 0xc8ccd6, light: 0x8e93a3, dark: 0x34363f, black: 0x1c1d24, yellow: 0xe0202c };
+
+export function makeRobot(colors = {}, kind = 'rr') {
   const root = new THREE.Group();  // position + facing (game controlled)
   const body = new THREE.Group();  // squash / stretch
-  const model = new THREE.Group(); // the actual mesh, replaceable by a GLB
-  model.scale.setScalar(0.88);
+  const model = new THREE.Group(); // the actual mesh
+  model.scale.setScalar(0.86);
   root.add(body);
   body.add(model);
-  const { white: W, light: L, dark: D, black: B, yellow: Y } = PAL;
+  const parts = buildRobot(model, colors, kind);
+  return { root, body, model, kind, ...parts };
+}
 
+// Swap the body of an existing robot (garage), keeping its root and whatever else is attached
+// to the model (jetpack). Callers re-attach things that live on limbs.
+export function rebuildRobot(robot, kind) {
+  for (const o of robot.parts) robot.model.remove(o);
+  Object.assign(robot, buildRobot(robot.model, {}, kind), { kind, acc: null });
+}
+
+function buildRobot(model, colors, kind) {
+  const before = new Set(model.children);
+  const C = { ...(kind === 'titan' ? PAL_TITAN : PAL), ...colors };
+  const mats = {
+    body: new THREE.MeshLambertMaterial({ color: C.white }),
+    shade: new THREE.MeshLambertMaterial({ color: C.light }),
+    dark: new THREE.MeshLambertMaterial({ color: C.dark }),
+    black: new THREE.MeshLambertMaterial({ color: C.black }),
+    accent: new THREE.MeshLambertMaterial({ color: C.yellow }),
+    eyes: new THREE.MeshBasicMaterial({ color: 0xf4f6ff }),
+    dot: new THREE.MeshBasicMaterial({ color: kind === 'titan' ? 0xff3a3a : 0xe8893a }),
+  };
+  const r = (kind === 'titan' ? buildTitan : buildRR)(model, mats);
+  return { ...r, mats, parts: model.children.filter((o) => !before.has(o)) };
+}
+
+function buildRR(model, mats) {
+  const W = mats.body, L = mats.shade, D = mats.dark, B = mats.black, Y = mats.accent;
+
+  // legs: hip pivot at the top of the thigh (y 0.73)
+  // legs: hip pivot at the top of the thigh (y 0.73), knee pivot below it, so steps can bend
   const legs = [-1, 1].map((s) => {
     const hip = new THREE.Group();
-    hip.position.set(s * 0.12, 0.5, 0);
+    hip.position.set(s * 0.115, 0.73, 0);
     model.add(hip);
-    box(hip, 0.17, 0.2, 0.19, W, 0, -0.1, 0);
-    box(hip, 0.18, 0.07, 0.2, D, 0, -0.22, 0);
-    box(hip, 0.17, 0.16, 0.19, W, 0, -0.33, 0);
-    box(hip, 0.21, 0.08, 0.28, Y, 0, -0.45, -0.03);
-    box(hip, 0.21, 0.03, 0.28, B, 0, -0.495, -0.03);
+    box(hip, 0.1, 0.24, 0.12, W, 0, -0.12, 0);              // thigh
+    const knee = new THREE.Group();
+    knee.position.y = -0.265;
+    hip.add(knee);
+    box(knee, 0.12, 0.05, 0.13, D, 0, 0, 0);                // knee joint
+    box(knee, 0.14, 0.27, 0.13, W, -s * 0.005, -0.155, 0);  // shin (wider than the thigh)
+    box(knee, 0.145, 0.04, 0.135, L, -s * 0.005, -0.035, 0);
+    box(knee, 0.1, 0.06, 0.1, D, 0, -0.315, 0);             // ankle
+    box(knee, 0.15, 0.08, 0.22, Y, 0, -0.385, -0.03);       // boot
+    box(knee, 0.155, 0.04, 0.225, B, 0, -0.445, -0.03);     // sole
+    hip.userData.knee = knee;
     return hip;
   });
 
-  box(model, 0.38, 0.12, 0.22, D, 0, 0.55, 0);           // pelvis
-  box(model, 0.52, 0.36, 0.32, W, 0, 0.79, 0);           // torso
-  box(model, 0.53, 0.05, 0.33, L, 0, 0.63, 0);           // torso shading
-  box(model, 0.08, 0.15, 0.02, B, 0, 0.74, -0.165);      // chest slot
-  box(model, 0.04, 0.04, 0.025, 0x5a5c68, 0, 0.77, -0.166);
-  box(model, 0.04, 0.04, 0.025, 0x5a5c68, 0, 0.71, -0.166);
-  box(model, 0.06, 0.05, 0.02, L, 0.01, 0.89, -0.165);   // chest pixels
-  box(model, 0.06, 0.05, 0.02, Y, 0.09, 0.89, -0.165, true);
-  box(model, 0.16, 0.16, 0.04, Y, 0, 0.8, 0.175);        // back battery
-  box(model, 0.16, 0.05, 0.14, D, 0, 0.995, 0);          // neck
+  // waist and pelvis
+  box(model, 0.23, 0.07, 0.17, D, 0, 0.84, 0);
+  box(model, 0.18, 0.09, 0.15, D, 0, 0.765, 0);
+  box(model, 0.12, 0.05, 0.13, B, 0, 0.72, 0);
 
+  // torso with the chest details from the reference
+  box(model, 0.32, 0.31, 0.24, W, 0, 1.03, 0);
+  box(model, 0.322, 0.04, 0.242, L, 0, 0.895, 0);
+  box(model, 0.11, 0.025, 0.02, L, 0, 1.12, -0.121);       // light slot
+  box(model, 0.025, 0.025, 0.022, mats.dot, 0.035, 1.12, -0.122);
+  box(model, 0.075, 0.14, 0.02, B, 0, 1.0, -0.121);        // chest panel
+  for (const [dx, dy] of [[-0.018, 0.03], [0.018, 0.03], [-0.018, -0.03], [0.018, -0.03]]) box(model, 0.028, 0.05, 0.022, D, dx, 1.0 + dy, -0.122);
+  box(model, 0.08, 0.03, 0.07, D, 0, 1.2, 0);              // neck
+
+  // arms hang from the shoulders (pivot at the top corner of the torso)
   const arms = [-1, 1].map((s) => {
     const sh = new THREE.Group();
-    sh.position.set(s * 0.31, 0.93, 0);
+    sh.position.set(s * 0.21, 1.13, 0);
     model.add(sh);
-    box(sh, 0.12, 0.13, 0.2, D, 0, -0.03, 0);
-    box(sh, 0.13, 0.26, 0.15, W, s * 0.02, -0.2, 0);
-    box(sh, 0.15, 0.13, 0.17, Y, s * 0.02, -0.39, 0);
+    box(sh, 0.06, 0.1, 0.12, D, -s * 0.02, 0, 0);            // shoulder joint
+    box(sh, 0.12, 0.12, 0.13, W, s * 0.035, -0.07, 0);        // shoulder cap
+    box(sh, 0.11, 0.22, 0.12, W, s * 0.035, -0.24, 0);        // arm
+    box(sh, 0.112, 0.03, 0.122, L, s * 0.035, -0.17, 0);
+    box(sh, 0.07, 0.035, 0.08, D, s * 0.035, -0.37, 0);       // wrist
+    box(sh, 0.11, 0.1, 0.12, Y, s * 0.035, -0.44, 0);         // hand
     return sh;
   });
 
+  // head: square black helmet, two white eyes, big dark "ears"
   const head = new THREE.Group();
-  head.position.set(0, 1.02, 0);
+  head.position.set(0, 1.215, 0);
   model.add(head);
-  box(head, 0.46, 0.38, 0.4, B, 0, 0.19, 0);
-  const eyes = [-1, 1].map((s) => box(head, 0.07, 0.14, 0.02, 0xffffff, s * 0.085, 0.2, -0.205, true));
+  box(head, 0.21, 0.22, 0.21, B, 0, 0.11, 0);
+  box(head, 0.212, 0.02, 0.212, D, 0, 0.215, 0);
+  const eyes = [-1, 1].map((s) => {
+    const e = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.075, 0.02), mats.eyes);
+    e.position.set(s * 0.04, 0.115, -0.106);
+    head.add(e);
+    return e;
+  });
   for (const s of [-1, 1]) {
-    box(head, 0.06, 0.18, 0.18, D, s * 0.26, 0.19, 0.02);
-    box(head, 0.065, 0.08, 0.08, 0x55576a, s * 0.262, 0.19, 0.02);
+    box(head, 0.035, 0.14, 0.16, D, s * 0.122, 0.115, 0.005);
+    box(head, 0.02, 0.07, 0.08, B, s * 0.142, 0.115, 0.005);
   }
 
-  return { root, body, model, legs, arms, head, eyes };
+  return { legs, arms, head, eyes };
+}
+
+function buildTitan(model, mats) {
+  const W = mats.body, L = mats.shade, D = mats.dark, B = mats.black, Y = mats.accent;
+  // long legs: silver thigh with a red mark, dark knee pad, silver shin, dark boot with a silver toe
+  const legs = [-1, 1].map((s) => {
+    const hip = new THREE.Group();
+    hip.position.set(s * 0.1, 0.735, 0);
+    model.add(hip);
+    box(hip, 0.11, 0.27, 0.12, W, 0, -0.135, 0);
+    box(hip, 0.112, 0.05, 0.122, L, 0, -0.03, 0);
+    box(hip, 0.035, 0.13, 0.01, Y, s * 0.025, -0.16, -0.062);   // accent stripe on the thigh
+    box(hip, 0.01, 0.13, 0.05, Y, s * 0.056, -0.16, -0.02);
+    const knee = new THREE.Group();
+    knee.position.y = -0.29;
+    hip.add(knee);
+    box(knee, 0.125, 0.09, 0.14, D, 0, -0.01, -0.005);
+    box(knee, 0.08, 0.05, 0.02, Y, 0, -0.01, -0.08);            // knee plate
+    box(knee, 0.12, 0.25, 0.125, W, 0, -0.17, 0);
+    box(knee, 0.122, 0.04, 0.127, L, 0, -0.08, 0);
+    box(knee, 0.15, 0.1, 0.2, B, 0, -0.35, -0.02);
+    box(knee, 0.152, 0.04, 0.06, L, 0, -0.32, -0.1);
+    box(knee, 0.154, 0.025, 0.2, Y, 0, -0.38, -0.02);           // boot stripe
+    box(knee, 0.156, 0.03, 0.205, D, 0, -0.43, -0.02);
+    hip.userData.knee = knee;
+    return hip;
+  });
+
+  // pelvis: silver plate over dark joints
+  box(model, 0.17, 0.08, 0.14, L, 0, 0.775, 0);
+  box(model, 0.21, 0.05, 0.13, D, 0, 0.73, 0);
+  // dark abdomen, silver chest with the red core and a glowing square light above it
+  box(model, 0.23, 0.15, 0.17, B, 0, 0.885, 0);
+  box(model, 0.08, 0.02, 0.172, L, 0, 0.83, 0);
+  box(model, 0.34, 0.22, 0.23, W, 0, 1.065, 0);
+  box(model, 0.342, 0.03, 0.232, L, 0, 0.965, 0);
+  box(model, 0.13, 0.09, 0.02, Y, 0, 0.995, -0.118);
+  box(model, 0.08, 0.05, 0.02, Y, 0, 0.935, -0.112);
+  for (const s of [-1, 1]) box(model, 0.03, 0.2, 0.02, Y, s * 0.155, 1.07, -0.112); // side trims
+  box(model, 0.075, 0.065, 0.02, B, 0, 1.085, -0.119);
+  box(model, 0.04, 0.035, 0.022, mats.dot, 0, 1.085, -0.121);
+  box(model, 0.015, 0.015, 0.024, mats.eyes, 0, 1.085, -0.122);
+  for (const s of [-1, 1]) box(model, 0.04, 0.04, 0.02, D, s * 0.12, 1.02, -0.116);
+  box(model, 0.08, 0.04, 0.07, D, 0, 1.195, 0);
+
+  // arms: dark shoulder block, long silver arm, dark hand
+  const arms = [-1, 1].map((s) => {
+    const sh = new THREE.Group();
+    sh.position.set(s * 0.215, 1.14, 0);
+    model.add(sh);
+    box(sh, 0.11, 0.12, 0.13, D, s * 0.035, -0.04, 0);
+    box(sh, 0.06, 0.06, 0.135, Y, s * 0.035, -0.04, 0);         // accent square on the shoulder
+    box(sh, 0.1, 0.03, 0.112, Y, s * 0.035, -0.32, 0);           // cuff
+    box(sh, 0.1, 0.24, 0.11, W, s * 0.035, -0.21, 0);
+    box(sh, 0.102, 0.03, 0.112, L, s * 0.035, -0.12, 0);
+    box(sh, 0.105, 0.1, 0.115, B, s * 0.035, -0.38, 0);
+    return sh;
+  });
+
+  // head: grey helmet, dark visor band with two glowing eyes, silver face plate, side ears
+  const head = new THREE.Group();
+  head.position.set(0, 1.215, 0);
+  model.add(head);
+  box(head, 0.2, 0.21, 0.2, L, 0, 0.105, 0);
+  box(head, 0.202, 0.05, 0.202, W, 0, 0.19, 0);
+  box(head, 0.19, 0.055, 0.02, B, 0, 0.13, -0.1);
+  box(head, 0.12, 0.07, 0.02, W, 0, 0.06, -0.101);
+  const eyes = [-1, 1].map((s) => {
+    const e = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.025, 0.02), mats.eyes);
+    e.position.set(s * 0.042, 0.132, -0.108);
+    head.add(e);
+    return e;
+  });
+  for (const s of [-1, 1]) {
+    box(head, 0.03, 0.1, 0.12, D, s * 0.112, 0.11, 0.01);
+    box(head, 0.034, 0.03, 0.07, Y, s * 0.113, 0.11, 0.01);
+  }
+  return { legs, arms, head, eyes };
+}
+
+// Recolor a robot built by makeRobot (garage skins).
+export function paintRobot(robot, colors) {
+  const m = robot.mats;
+  if (!m) return;
+  if (colors.white != null) m.body.color.setHex(colors.white);
+  if (colors.light != null) m.shade.color.setHex(colors.light);
+  if (colors.yellow != null) m.accent.color.setHex(colors.yellow);
+  if (colors.black != null) m.black.color.setHex(colors.black);
+  if (colors.dark != null) m.dark.color.setHex(colors.dark);
+  if (colors.eyes != null) m.eyes.color.setHex(colors.eyes);
 }
 
 // ---------------------------------------------------------------- vehicles
@@ -320,14 +465,22 @@ export function makeTrain() {
 }
 
 // Anti-gravity pad crossing the gap between city levels.
+// Anti-gravity pad: a bright, clearly solid deck with a thick neon rim and a glow underneath,
+// so it reads at a glance against the dark gap.
 export function makePad(len) {
   const g = new THREE.Group();
-  box(g, len - 0.08, 0.2, 0.86, 0x2c2f52, 0, -0.12, 0);
-  box(g, len - 0.2, 0.02, 0.7, 0x3a3e6a, 0, -0.015, 0);
-  for (const z of [-0.43, 0.43]) box(g, len - 0.08, 0.04, 0.04, 0x35e6ff, 0, -0.03, z, true);
-  for (const x of [-(len / 2 - 0.12), len / 2 - 0.12]) box(g, 0.08, 0.05, 0.7, 0xff4fd8, x, -0.02, 0, true);
-  for (let i = 1; i < len; i++) box(g, 0.04, 0.02, 0.6, 0x23264a, -len / 2 + i, -0.005, 0);
-  box(g, len - 0.4, 0.06, 0.5, 0x35e6ff, 0, -0.25, 0, true);
+  const L = len - 0.08;
+  box(g, L, 0.18, 0.86, 0x3a3e6a, 0, -0.11, 0);          // body
+  box(g, L - 0.04, 0.03, 0.8, 0xd4d8ee, 0, -0.005, 0);   // light deck
+  for (let i = 1; i < len; i++) box(g, 0.03, 0.035, 0.7, 0x9aa0c4, -len / 2 + i, -0.002, 0);
+  for (const z of [-0.43, 0.43]) box(g, L + 0.02, 0.07, 0.06, 0x35e6ff, 0, -0.04, z, true);   // thick rim
+  for (const x of [-L / 2, L / 2]) box(g, 0.08, 0.08, 0.86, 0xff4fd8, x, -0.04, 0, true);       // glowing ends
+  // small thrusters under the deck instead of a glowing slab
+  for (let i = 0; i < len; i++) {
+    const x = -len / 2 + 0.5 + i;
+    box(g, 0.22, 0.08, 0.22, 0x23253a, x, -0.24, 0);
+    box(g, 0.12, 0.03, 0.12, 0x9ff3ff, x, -0.29, 0, true);
+  }
   bake(g);
   g.userData = { len };
   return g;
@@ -891,10 +1044,30 @@ export function makeScanner() {
 }
 
 // Electrified floor panel; its centre material is swapped by the game (off / warning / on).
+// Electrified floor panel: a raised yellow/black frame you can see from far away. The game adds
+// the swapping centre, the lightning glyph and the warning hologram.
 export function shockTile(p, x) {
-  for (const dz of [-0.44, 0.44]) box(p, 0.92, 0.02, 0.04, 0x35e6ff, x, 0.012, dz, true);
-  for (const dx of [-0.44, 0.44]) box(p, 0.04, 0.02, 0.92, 0x35e6ff, x + dx, 0.012, 0, true);
-  box(p, 0.3, 0.03, 0.06, 0xffc21a, x, 0.015, 0.3);
+  box(p, 0.96, 0.03, 0.96, 0x1a1a22, x, 0.015, 0);
+  for (const [w, d, dx, dz] of [[0.96, 0.09, 0, 0.44], [0.96, 0.09, 0, -0.44], [0.09, 0.78, 0.44, 0], [0.09, 0.78, -0.44, 0]]) {
+    const n = 6;
+    for (let i = 0; i < n; i++) {
+      const along = w > d;
+      const len = (along ? w : d) / n;
+      const ox = along ? -w / 2 + len * (i + 0.5) : 0;
+      const oz = along ? 0 : -d / 2 + len * (i + 0.5);
+      box(p, along ? len : w, 0.06, along ? d : len, i % 2 ? 0x1a1a1a : 0xffc21a, x + dx + ox, 0.03, dz + oz);
+    }
+  }
+}
+// zig-zag lightning glyph on the panel (material is per tile so it can blink)
+export function boltGlyph(p, x, material) {
+  const parts = [[0.08, 0.26, 0.05, -0.1, 0.5], [0.08, 0.2, -0.02, 0.0, -0.9], [0.08, 0.26, -0.05, 0.12, 0.5]];
+  for (const [w, d, dx, dz, r] of parts) {
+    const m = new THREE.Mesh(geo(w, 0.012, d, false), material);
+    m.position.set(x + dx, 0.035, dz);
+    m.rotation.y = r;
+    p.add(m);
+  }
 }
 export const SHOCK_MATS = {
   off: mat(0x23314f),
@@ -989,38 +1162,6 @@ export function makeBuoy() {
   return g;
 }
 
-// Bascule bridge over a canal: two leaves hinged at the banks. Returns the leaves to animate.
-export function liftBridge(p, cx, width) {
-  const leaves = [1, -1].map((s) => {
-    // s = +1: south leaf hinged at z = +0.5; s = -1: north leaf hinged at z = -0.5
-    const pivot = new THREE.Group();
-    pivot.position.set(cx, 0, s * 0.5);
-    const leaf = new THREE.Group();
-    leaf.position.z = -s * 0.25;
-    box(leaf, width, 0.12, 0.5, 0x6a6f98, 0, -0.06, 0);
-    box(leaf, width - 0.1, 0.02, 0.46, 0x8a8fb8, 0, 0.005, 0);
-    for (const x of [-width / 2 + 0.05, width / 2 - 0.05]) {
-      box(leaf, 0.05, 0.25, 0.5, 0x3a3d55, x, 0.12, 0);
-      box(leaf, 0.06, 0.03, 0.5, 0xffc21a, x, 0.26, 0);
-    }
-    box(leaf, width, 0.03, 0.04, 0xffc21a, 0, 0.01, -s * 0.24, true);
-    bake(leaf);
-    pivot.add(leaf);
-    p.add(pivot);
-    return pivot;
-  });
-  // operator posts with signal lights on both banks
-  const lights = [];
-  for (const sx of [-1, 1]) {
-    const x = cx + sx * (width / 2 + 0.25);
-    for (const z of [0.42, -0.42]) {
-      box(p, 0.16, 1.1, 0.16, 0x3a3d55, x, 0.55, z);
-      box(p, 0.26, 0.3, 0.2, 0x1d1e28, x, 1.15, z);
-      lights.push(box(p, 0.14, 0.14, 0.04, 0x3dff7a, x, 1.15, z + (z > 0 ? 0.11 : -0.11), true));
-    }
-  }
-  return { leaves, lights };
-}
 
 export function fountain(p, x, z = 0) {
   box(p, 0.9, 0.26, 0.9, 0xb8bcd8, x, 0.13, z);
@@ -1241,14 +1382,28 @@ export function makeBeam() {
 // Target marker under a falling beam: dark shadow growing inside a blinking red ring.
 export function makeBeamMark() {
   const g = new THREE.Group();
-  const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.45, 20), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4, depthWrite: false }));
+  const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.45, 20), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.45, depthWrite: false }));
   shadow.rotation.x = -Math.PI / 2;
   shadow.position.y = 0.015;
-  const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.48, 24), new THREE.MeshBasicMaterial({ color: 0xff2b4a, transparent: true, opacity: 0.9, depthWrite: false }));
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.4, 0.48, 24), new THREE.MeshBasicMaterial({ color: 0xff2b4a, transparent: true, opacity: 0.9, depthWrite: false }));
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 0.017;
   g.add(shadow, ring);
-  g.userData = { shadow, ring };
+  // striped target square around the cell
+  for (const [w, d, dx, dz] of [[0.96, 0.06, 0, 0.47], [0.96, 0.06, 0, -0.47], [0.06, 0.96, 0.47, 0], [0.06, 0.96, -0.47, 0]]) {
+    for (let i = 0; i < 6; i++) {
+      const along = w > d;
+      const len = (along ? w : d) / 6;
+      const m = new THREE.Mesh(geo(along ? len : w, 0.02, along ? d : len, false), mat(i % 2 ? 0x1a1a1a : 0xffc21a, true));
+      m.position.set(dx + (along ? -w / 2 + len * (i + 0.5) : 0), 0.02, dz + (along ? 0 : -d / 2 + len * (i + 0.5)));
+      g.add(m);
+    }
+  }
+  // targeting laser from the sky
+  const column = new THREE.Mesh(geo(0.05, 9, 0.05, false), new THREE.MeshBasicMaterial({ color: 0xff3050, transparent: true, opacity: 0.6, depthWrite: false, blending: THREE.AdditiveBlending }));
+  column.position.y = 4.5;
+  g.add(column);
+  g.userData = { shadow, ring, column };
   return g;
 }
 
@@ -1355,3 +1510,108 @@ export const DECALS = {
     for (let i = -1; i <= 1; i++) flat(p, 0.22, 0.02, 0x3a3d55, x, z + i * 0.07, -0.072);
   },
 };
+
+// ---------------------------------------------------------------- flight center & jetpack
+// A landing pad across the whole street (the robot cannot miss it) under a neon arch, with hangars.
+export function flightCenter(p, half) {
+  const w = half * 2 + 1.4;
+  box(p, w, 0.04, 0.96, 0x2a2c48, 0, 0.02, 0);
+  for (const z of [-0.45, 0.45]) box(p, w, 0.03, 0.05, 0x35e6ff, 0, 0.045, z, true);
+  for (let x = -half; x <= half; x++) {
+    // chevrons pointing forward on every cell
+    for (const s of [-1, 1]) box(p, 0.3, 0.012, 0.07, 0xffd21f, x + s * 0.1, 0.045, 0.05, true).rotation.y = s * 0.7;
+  }
+  for (const s of [-1, 1]) {
+    const x = s * (half + 1.6);
+    box(p, 1.8, 1.6, 0.96, 0x3a3e66, x, 0.8, 0);
+    box(p, 1.4, 0.4, 0.96, 0x4a4f78, x, 1.8, 0);
+    box(p, 0.8, 0.3, 0.96, 0x4a4f78, x, 2.15, 0);
+    box(p, 1.2, 1.0, 0.04, 0x1a2240, x, 0.6, 0.49);
+    box(p, 1.22, 0.05, 0.05, 0x35e6ff, x, 1.12, 0.5, true);
+    for (const dz of [-0.3, 0.3]) box(p, 0.1, 0.1, 0.1, 0xff2b4a, x + s * 0.85, 1.7, dz, true);
+  }
+}
+
+export function makeJetpack() {
+  const g = new THREE.Group();
+  box(g, 0.22, 0.26, 0.09, 0x3a3d55, 0, 0, 0);
+  box(g, 0.24, 0.04, 0.1, 0x35e6ff, 0, 0.1, 0, true);
+  const flames = [];
+  for (const s of [-1, 1]) {
+    box(g, 0.08, 0.14, 0.08, 0xd6a124, s * 0.07, -0.16, 0.02);
+    const f = box(g, 0.07, 0.22, 0.07, 0xffa21a, s * 0.07, -0.34, 0.02, true);
+    const core = box(g, 0.04, 0.16, 0.04, 0xfff1a8, s * 0.07, -0.3, 0.02, true);
+    f.visible = core.visible = false;
+    flames.push(f, core);
+  }
+  g.userData.flames = flames;
+  return g;
+}
+
+// Sky obstacles for jetpack flights. Every one gets a pulsing red danger aura and a blinking
+// beacon (materials returned in userData so the game can animate them) so it reads at a glance.
+export const AIR_WIDTH = { taxi: 2, cargo: 1, laser: 3, billboard: 2, blimp: 2, swarm: 1, mast: 1 };
+
+export function makeAirObstacle(kind) {
+  const w = AIR_WIDTH[kind];
+  const g = new THREE.Group();
+  let h = 0.9; // height of the danger aura
+  if (kind === 'taxi') {
+    const car = makeVehicle(Math.random() < 0.5 ? 'hovercar' : 'taxi');
+    car.position.y = -0.4;
+    g.add(car);
+  } else if (kind === 'cargo') {
+    box(g, 0.5, 0.14, 0.4, 0x2a2c48, 0, 0.42, 0);
+    for (const [dx, dz] of [[-0.3, -0.25], [0.3, -0.25], [-0.3, 0.25], [0.3, 0.25]]) box(g, 0.24, 0.02, 0.24, 0x35e6ff, dx, 0.5, dz, true);
+    box(g, 0.04, 0.2, 0.04, 0x55597a, 0, 0.27, 0);
+    box(g, 0.78, 0.55, 0.6, pick([0xd84a3a, 0x2b6bff, 0xffa21a, 0x3dbf6a]), 0, -0.08, 0);
+    for (let i = -2; i <= 2; i++) box(g, 0.02, 0.5, 0.61, 0x1a1a1a, i * 0.15, -0.08, 0);
+    h = 1.1;
+  } else if (kind === 'laser') {
+    // two hovering emitters with a red beam between them (3 lanes wide)
+    for (const s of [-1, 1]) {
+      box(g, 0.3, 0.3, 0.3, 0x2a2c48, s * 1.35, 0, 0);
+      box(g, 0.34, 0.04, 0.34, 0xff2b4a, s * 1.35, 0.17, 0, true);
+    }
+    const beam = new THREE.Mesh(geo(2.4, 0.08, 0.08, false), new THREE.MeshBasicMaterial({ color: 0xff3050 }));
+    const glow = new THREE.Mesh(geo(2.4, 0.3, 0.3, false), new THREE.MeshBasicMaterial({ color: 0xff2b4a, transparent: true, opacity: 0.35, depthWrite: false, blending: THREE.AdditiveBlending }));
+    g.add(beam, glow);
+    h = 0.5;
+  } else if (kind === 'billboard') {
+    box(g, 1.9, 1.0, 0.08, 0x1d1e30, 0, 0, 0);
+    sign(g, 1.7, 0.85, 0.1, 'logo', Math.floor(Math.random() * 3), 0, 0, 0);
+    box(g, 1.94, 0.05, 0.1, 0xff2b4a, 0, 0.52, 0, true);
+    box(g, 1.94, 0.05, 0.1, 0xff2b4a, 0, -0.52, 0, true);
+    for (const s of [-1, 1]) box(g, 0.2, 0.12, 0.2, 0x2a2c48, s * 0.8, 0.6, 0);
+    h = 1.2;
+  } else if (kind === 'blimp') {
+    box(g, w * 0.95, 0.5, 0.6, 0x7b3fe4);
+    box(g, w * 0.75, 0.66, 0.5, 0x7b3fe4);
+    box(g, w * 0.5, 0.2, 0.3, 0x2a2c48, 0, -0.42, 0);
+    box(g, 0.2, 0.4, 0.06, 0xff4fd8, -w * 0.48, 0.15, 0);
+    sign(g, w * 0.55, 0.3, 0.62, 'word', 0, 0, 0.02, 0);
+  } else if (kind === 'mast') {
+    // antenna mast rising from the street below up into the flight path
+    box(g, 0.18, 4.4, 0.18, 0x6a6f98, 0, -2.0, 0);
+    for (let y = -3.6; y < 0; y += 0.6) box(g, 0.34, 0.04, 0.34, 0x8a8fb8, 0, y, 0);
+    box(g, 0.5, 0.5, 0.1, 0xd9dce4, 0, 0.1, 0.12);
+    box(g, 0.06, 0.6, 0.06, 0x6a6f98, 0, 0.5, 0);
+    h = 1.3;
+  } else {
+    for (const [dx, dy] of [[-0.22, 0.12], [0.2, -0.05], [0, 0.3]]) {
+      box(g, 0.26, 0.1, 0.22, 0x2a2c48, dx, dy, 0);
+      box(g, 0.3, 0.02, 0.3, 0xff6a7a, dx, dy + 0.07, 0, true);
+      box(g, 0.14, 0.12, 0.14, 0xffc21a, dx, dy - 0.1, 0);
+    }
+  }
+  // danger aura + beacon
+  const aura = new THREE.MeshBasicMaterial({ color: 0xff2b4a, transparent: true, opacity: 0.18, depthWrite: false, blending: THREE.AdditiveBlending });
+  const auraBox = new THREE.Mesh(geo(w - 0.1, h, 0.75, false), aura);
+  g.add(auraBox);
+  const beacon = new THREE.MeshBasicMaterial({ color: 0xff2b4a });
+  const b = new THREE.Mesh(geo(0.14, 0.14, 0.14, false), beacon);
+  b.position.y = h / 2 + 0.12;
+  g.add(b);
+  g.userData = { w, aura, beacon, top: h / 2 + 0.45 };
+  return g;
+}

@@ -180,34 +180,56 @@ const GROUND = {
     grain(x, 32, 32, 14, r);
     return toTex(c, 2);
   },
-  // Lights of the lower city levels seen deep down.
+  // Bottom of the chasm: almost black, a few dim red service lights far below.
   abyss: () => {
-    const [c, x] = canvas(96, 96);
-    const r = rng(17);
-    const g = x.createLinearGradient(0, 0, 0, 96);
-    g.addColorStop(0, '#0b0e2c');
-    g.addColorStop(1, '#05061a');
-    x.fillStyle = g;
-    x.fillRect(0, 0, 96, 96);
-    for (let i = 0; i < 40; i++) {
-      const w = 6 + Math.floor(r() * 12), h = 6 + Math.floor(r() * 14);
-      const bx = Math.floor(r() * 96), by = Math.floor(r() * 96);
-      x.fillStyle = r() < 0.5 ? '#12153a' : '#191c48';
-      x.fillRect(bx, by, w, h);
-      for (let k = 0; k < 6; k++) {
-        x.fillStyle = ['#35e6ff', '#ff4fd8', '#ffd27a', '#8a7dff'][Math.floor(r() * 4)];
-        x.globalAlpha = 0.4 + r() * 0.6;
-        x.fillRect(bx + Math.floor(r() * w), by + Math.floor(r() * h), 1, 1);
-      }
-      x.globalAlpha = 1;
-    }
-    for (let i = 0; i < 6; i++) {
-      x.fillStyle = r() < 0.5 ? 'rgba(53,230,255,.5)' : 'rgba(255,79,216,.5)';
-      x.fillRect(0, Math.floor(r() * 96), 96, 1);
-    }
-    return toTex(c, 6);
+    const [c, x] = canvas(64, 64);
+    x.fillStyle = '#04040e';
+    x.fillRect(0, 0, 64, 64);
+    x.fillStyle = 'rgba(255,43,74,.35)';
+    x.fillRect(0, 30, 64, 2);
+    x.fillStyle = 'rgba(255,43,74,.8)';
+    for (const px of [6, 38]) x.fillRect(px, 29, 3, 4);
+    return toTex(c, 4);
   },
 };
+
+// Far wall of the chasm: lit steel at the top fading into black, so it reads as deep.
+let shaftTex = null;
+export function shaftMaterial(repeatX) {
+  if (!shaftTex) {
+    const [c, x] = canvas(64, 128);
+    const g = x.createLinearGradient(0, 0, 0, 128);
+    g.addColorStop(0, '#4a4f70');
+    g.addColorStop(0.25, '#262a44');
+    g.addColorStop(0.6, '#0c0d1e');
+    g.addColorStop(1, '#020208');
+    x.fillStyle = g;
+    x.fillRect(0, 0, 64, 128);
+    // panel seams and girders, dimmer the deeper they are
+    for (let px = 0; px < 64; px += 16) { x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(px, 0, 1, 128); }
+    for (const [y, a] of [[10, 0.9], [40, 0.5], [74, 0.25], [104, 0.1]]) {
+      x.fillStyle = `rgba(150,160,200,${a * 0.5})`;
+      x.fillRect(0, y, 64, 3);
+      x.fillStyle = `rgba(0,0,0,${a * 0.6})`;
+      x.fillRect(0, y + 3, 64, 2);
+      x.fillStyle = `rgba(53,230,255,${a})`;
+      x.fillRect(7, y + 1, 2, 1);
+      x.fillRect(39, y + 1, 2, 1);
+    }
+    // cables hanging down into the dark
+    x.fillStyle = 'rgba(10,10,20,.8)';
+    x.fillRect(22, 12, 2, 90);
+    x.fillRect(52, 12, 2, 70);
+    shaftTex = new THREE.CanvasTexture(c);
+    shaftTex.colorSpace = THREE.SRGBColorSpace;
+    shaftTex.wrapS = THREE.RepeatWrapping;
+    shaftTex.magFilter = THREE.NearestFilter;
+  }
+  const t = shaftTex.clone();
+  t.needsUpdate = true;
+  t.repeat.set(repeatX, 1);
+  return new THREE.MeshBasicMaterial({ map: t, fog: false });
+}
 
 const texCache = new Map();
 function tex(name) {
@@ -759,4 +781,33 @@ export function waterMaterial() {
   const map = toTex(waterCanvas, 2);
   const material = new THREE.MeshLambertMaterial({ map, emissive: 0x0b2c7a, emissiveIntensity: 1 });
   return { material, map };
+}
+
+// ---------------------------------------------------------------- hazard holograms (warning signs over traps)
+const hazardCache = new Map();
+export function hazardSprite(kind) {
+  if (!hazardCache.has(kind)) {
+    const [c, x] = canvas(32, 32);
+    // yellow warning triangle with a black rim
+    x.fillStyle = '#1a1a1a';
+    x.beginPath(); x.moveTo(16, 1); x.lineTo(31, 29); x.lineTo(1, 29); x.closePath(); x.fill();
+    x.fillStyle = '#ffd21f';
+    x.beginPath(); x.moveTo(16, 5); x.lineTo(28, 27); x.lineTo(4, 27); x.closePath(); x.fill();
+    x.fillStyle = '#1a1a1a';
+    if (kind === 'bolt') {
+      x.beginPath(); x.moveTo(17, 9); x.lineTo(11, 19); x.lineTo(15, 19); x.lineTo(13, 26); x.lineTo(21, 15); x.lineTo(17, 15); x.lineTo(19, 9); x.closePath(); x.fill();
+    } else if (kind === 'gap') {
+      x.fillRect(9, 20, 14, 3); x.fillRect(14, 12, 4, 6); x.fillRect(12, 17, 8, 2);
+    } else {
+      x.fillRect(14, 11, 4, 9); x.fillRect(14, 22, 4, 3);
+    }
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.magFilter = THREE.NearestFilter;
+    hazardCache.set(kind, new THREE.SpriteMaterial({ map: t, transparent: true, depthWrite: false, fog: false }));
+  }
+  const s = new THREE.Sprite(hazardCache.get(kind).clone());
+  s.scale.set(0.42, 0.42, 1);
+  s.renderOrder = 15;
+  return s;
 }

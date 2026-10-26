@@ -180,6 +180,12 @@ export class Environment {
     this.scene.fog.color.setHex(wet(fog, r));
     this.scene.fog.near = 20 - r * 6;
     this.scene.fog.far = 52 - r * 12;
+    // jetpack sky level: the city below sinks into haze
+    const hz = this.skyHaze ?? 0;
+    if (hz > 0) {
+      this.scene.fog.near += (6 - this.scene.fog.near) * hz;
+      this.scene.fog.far += (34 - this.scene.fog.far) * hz;
+    }
     this.backdrop.update(dt, performance.now() / 1000, camPos, s, this.scene.fog.color.getHex(), s.night * (1 - r * 0.3));
 
     // sky texture (redrawn only when it visibly changes)

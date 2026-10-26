@@ -9,6 +9,12 @@ export function initTelegram(bg) {
   if (supports('7.7')) try { tg.disableVerticalSwipes(); } catch {}
   if (supports('6.1')) try { tg.setHeaderColor(bg); tg.setBackgroundColor(bg); } catch {}
   if (supports('7.10')) try { tg.setBottomBarColor(bg); } catch {}
+  // Bot API 8.0+: true fullscreen (no Telegram header / bottom bar) and portrait lock on phones.
+  if (supports('8.0')) {
+    const mobile = ['android', 'ios'].includes(tg.platform);
+    try { if (mobile) tg.requestFullscreen(); } catch {}
+    try { if (mobile) tg.lockOrientation(); } catch {}
+  }
 }
 
 // Telegram tells us when the mini app goes to the background and comes back (Bot API 8.0+).

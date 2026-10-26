@@ -6,6 +6,9 @@ import { initTelegram, haptic, store, onAppHidden } from './telegram.js';
 import { sfx, isMuted, setMuted, isMusicOn, setMusic, setAudioPaused } from './audio.js';
 import { Environment, DISTRICTS, districtAt, districtIndex } from './env.js';
 import * as NPC from './npc.js';
+import * as G from './garage.js';
+import * as LB from './leaderboard.js';
+import { wiresGame } from './minigame.js';
 
 // ---------------------------------------------------------------- config
 const BG = '#1d1f3f';
@@ -14,7 +17,7 @@ const SPAWN = 16;            // moving objects wrap inside -SPAWN..SPAWN
 const LOOP = SPAWN * 2;
 const WORLD_W = 40;
 const BLD_X = HALF + 1.1;    // skyscrapers start here (both sides)
-const HOP_TIME = 0.13;
+const HOP_TIME = 0.16;
 const TRAIN_SPEED = 26;
 const GAP_DEPTH = 2.7;
 // Drop the real robot here (GLB, Y-up, ~any scale). Optional node names for animation:
@@ -83,9 +86,10 @@ NPC.configure(HALF);
 // Chase camera behind the robot, looking down the street like the concept art.
 const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 160);
 // Slightly to the right of the robot, like the concept art.
-const CAM_UP = 4.55, CAM_BACK = 3.9, CAM_SIDE = 1.45, LOOK_AHEAD = 6.5;
+const CAM_UP = 4.2, CAM_BACK = 3.6, CAM_SIDE = 1.35, LOOK_AHEAD = 6.2;
 const PITCH = Math.atan2(CAM_UP, CAM_BACK + LOOK_AHEAD);
 
+let baseFov = 50;
 // The game lives in a phone-shaped frame (#app), so the view is the same on any screen.
 const phone = $('app');
 
@@ -97,6 +101,7 @@ function resize() {
   // Portrait: keep about 7 columns across at the robot; landscape: plain 48° vertical fov.
   const vfov = a < 1 ? Math.min(105, 2 * Math.atan(Math.tan((62 * Math.PI) / 360) / a) * 180 / Math.PI) : 50;
   camera.fov = vfov;
+  baseFov = vfov;
   camera.aspect = a;
   camera.updateProjectionMatrix();
   const half = Math.tan((vfov * Math.PI) / 360);
@@ -132,7 +137,7 @@ function withRng(salt, fn) {
 function resetGen() {
   gen = {
     type: 'safe', left: 0, style: 'sidewalk', cw: 0,
-    lastViaduct: 0, lastDistrict: 0,
+    lastViaduct: 0, lastDistrict: 0, nextCenter: 32,
     last: {}, prevHazard: null, tension: 0,
     trail: 0, trailCol: 0,
   };
@@ -212,12 +217,6 @@ function nextType(row) {
   gen.type = t;
   gen.left = randInt(a, b) - 1;
   gen.prevHazard = t;
-  // a bascule bridge only spans a one-row canal
-  gen.bridgeRow = null;
-  if (t === 'water' && row > 12 && Math.random() < 0.35) {
-    gen.left = 0;
-    gen.bridgeRow = row;
-  }
   gen.last[t] = row + gen.left;
   gen.tension += (gen.left + 1) * HAZARDS[t].tension;
   if (t === 'road') gen.cw = randInt(-HALF + 1, HALF - 1);
@@ -239,7 +238,9 @@ function planOne() {
     // neon gate on the first sidewalk of a new district, monorail every ~22 rows
     const gate = type === 'safe' && districtIndex(planRow) !== gen.lastDistrict;
     if (gate) gen.lastDistrict = districtIndex(planRow);
-    const viaduct = type === 'safe' && !gate && planRow - gen.lastViaduct > 22;
+    const center = type === 'safe' && !gate && gen.style !== 'park' && planRow >= gen.nextCenter;
+    if (center) gen.nextCenter = planRow + 80;
+    const viaduct = type === 'safe' && !gate && !center && planRow - gen.lastViaduct > 22;
     if (viaduct) gen.lastViaduct = planRow;
     // coin trail through breather zones, wandering one column at a time
     let trail = null;
@@ -251,8 +252,7 @@ function planOne() {
     const bp = gen.bigPark;
     const park = type === 'safe' && bp && planRow >= bp.start && planRow < bp.start + bp.len
       ? { idx: planRow - bp.start, len: bp.len } : null;
-    const bridge = type === 'water' && gen.bridgeRow === planRow;
-    plan.set(planRow, { type, style: gen.style, cw: gen.cw, viaduct: viaduct && !park, gate, trail, park, bridge });
+    plan.set(planRow, { type, style: gen.style, cw: gen.cw, viaduct: viaduct && !park, gate, trail, park, center });
   }
 }
 
@@ -280,7 +280,7 @@ function createLane(row) {
     dir: 1, speed: 0,
     train: null, lamp: null,
     people: [], tiles: [], scanners: [], laser: null, patrol: null, strips: null,
-    crane: null, beams: null, bridge: null,
+    crane: null, beams: null,
     district: districtAt(row),
   };
   M.setDistrict(lane.district);
@@ -317,12 +317,27 @@ function freeCells(lane) {
 }
 
 // Cells of the previous lane from which the robot can step into this one (null = anywhere).
+// Every lane records the cells the robot can actually reach in it (lane.reach), so a free cell
+// walled off by props never counts as a way forward.
 function entryCells(prev) {
   if (!prev) return null;
+  if (prev.reach !== undefined) return prev.reach;
   if (prev.type === 'safe') return new Set(freeCells(prev));
-  if (prev.bridge) return new Set([prev.bridge.cx - 1, prev.bridge.cx, prev.bridge.cx + 1]);
   if (prev.type === 'water' && prev.speed === 0) return new Set(prev.movers.map((m) => m.x).filter((x) => Math.abs(x) <= HALF));
   return null;
+}
+
+// Cells reachable inside a lane: start where the robot can come in from below, then walk
+// sideways over the `open` cells.
+function reachCells(entry, open) {
+  const seeds = entry ? open.filter((x) => entry.has(x)) : open;
+  const reach = new Set(seeds);
+  for (const x0 of seeds) {
+    for (const dir of [-1, 1]) {
+      for (let x = x0 + dir; open.includes(x); x += dir) reach.add(x);
+    }
+  }
+  return reach;
 }
 
 function placeCoin(lane, x) {
@@ -417,8 +432,10 @@ function buildSafe(lane) {
 
   // Obstacles inside the playfield; some of them are people standing around.
   let cells;
-  if (row <= -3) cells = freeCells(lane);
-  else if (row < 0) cells = [-3, -1, 2];
+  if (inf.center) cells = [];
+  // behind the start the middle stays clear: the menu and garage cameras look through it
+  else if (row <= -3) cells = freeCells(lane).filter((x) => Math.abs(x) > 1);
+  else if (row < 0) cells = [-3, 3];
   else if (row === 0) cells = [-3, 3];
   else {
     const bp = inf.park;
@@ -436,11 +453,11 @@ function buildSafe(lane) {
     }
     // never block the coin trail, and always keep at least two ways in from the lane below
     if (inf.trail != null) cells = cells.filter((x) => x !== inf.trail);
+    // the robot must be able to get in from the lane below and still have room to move:
+    // drop obstacles until at least two cells of this lane are reachable
     const entry = entryCells(lanes.get(row - 1));
-    if (entry) {
-      const need = Math.min(2, entry.size);
-      while (cells.length && [...entry].filter((x) => !cells.includes(x)).length < need) cells.pop();
-    }
+    const open = () => freeCells(lane).filter((x) => !cells.includes(x));
+    while (cells.length && (reachCells(entry, open()).size < 2 || (entry && [...entry].filter((x) => !cells.includes(x)).length < Math.min(2, entry.size)))) cells.pop();
   }
   const standing = [];
   if (row <= -3) {
@@ -463,6 +480,7 @@ function buildSafe(lane) {
   }
   // people step aside for the robot, so their cells stay walkable
   for (const x of cells) if (!standing.includes(x)) lane.blocked.add(x);
+  lane.reach = row <= 0 ? null : reachCells(entryCells(lanes.get(row - 1)), freeCells(lane));
 
   // Electrified floor panels on plazas further into the city.
   const tileCells = [];
@@ -521,6 +539,10 @@ function buildSafe(lane) {
     M.lighthouse(group, (Math.random() < 0.5 ? -1 : 1) * 5.4);
     gapNear = Math.max(gapNear, 2.2);
   }
+  if (inf.center) {
+    M.flightCenter(group, HALF);
+    M.gate(group, 'ЛЁТНЫЙ ЦЕНТР', '#0a1a2a', '#35e6ff', 0x35e6ff);
+  }
   if (inf.viaduct) M.viaduct(group);
   if (inf.gate) M.gate(group, D.name, D.fg, D.bg, D.neonHex);
   groundDetails(lane, park, curb);
@@ -536,14 +558,19 @@ function buildSafe(lane) {
     placeMovers(lane, [{ mesh, len: mesh.userData.len + 30, x: 0 }], 0);
   }
   for (const x of tileCells) {
-    const mesh = M.box(group, 0.84, 0.02, 0.84, M.SHOCK_MATS.off, x, 0.012, 0);
+    const mesh = M.box(group, 0.76, 0.02, 0.76, M.SHOCK_MATS.off, x, 0.035, 0);
     mesh.castShadow = false;
-    lane.tiles.push({ x, mesh, phase: 'off', t: rand(0.5, 3), off: rand(1.8, 3) });
+    const boltMat = new THREE.MeshBasicMaterial({ color: 0x8a7010 });
+    M.boltGlyph(group, x, boltMat);
+    const sign = TX.hazardSprite('bolt');
+    sign.position.set(x, 1.0, 0);
+    group.add(sign);
+    lane.tiles.push({ x, mesh, boltMat, sign, phase: 'off', t: rand(0.5, 3), off: rand(1.8, 3) });
   }
 
   // People: standing in the way, waiting at the curb, strolling along the sidewalk.
   // Some wait for a high five, some are fans, some sidewalks have delivery robots.
-  if (row > -3) {
+  if (row > -3 && !inf.center) {
     const role = () => (row < 4 ? null : pick([null, null, null, 'five', 'five', 'fan']));
     for (const x of standing) NPC.spawnPerson(lane, x, 'stand', pick(NPC_FACES), role());
     for (const s of [-1, 1]) {
@@ -635,10 +662,34 @@ function buildGap(lane) {
   const prev = lanes.get(lane.row - 1);
   const { group } = lane;
   M.box(group, WORLD_W, 0.2, 1, TX.groundMat('abyss'), 0, -GAP_DEPTH - 0.1, 0).castShadow = false;
-  M.box(group, WORLD_W, GAP_DEPTH, 0.08, TX.groundMat('abyss', 0xc0c4ff), 0, -GAP_DEPTH / 2, -0.46).castShadow = false;
-  M.box(group, WORLD_W, 0.05, 0.1, 0x35e6ff, 0, -0.03, -0.45, true);
-  if (lane.prevType !== 'gap') M.box(group, WORLD_W, 0.05, 0.1, 0xff4fd8, 0, -0.03, 0.46, true);
+  // the far wall goes from lit steel into black: it reads as a deep shaft, not a floor
+  // (only at the last row of a wide chasm, otherwise it would stand between the rows)
+  if (lane.nextType !== 'gap') {
+    const wall = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_W, GAP_DEPTH), TX.shaftMaterial(WORLD_W / 2));
+    wall.position.set(0, -GAP_DEPTH / 2, -0.44);
+    group.add(wall);
+  }
+  // a little cold mist low down
+  const mist = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_W, 0.9), new THREE.MeshBasicMaterial({ color: 0x0a0c22, transparent: true, opacity: 0.7, depthWrite: false, fog: false }));
+  mist.rotation.x = -Math.PI / 2;
+  mist.position.y = -GAP_DEPTH * 0.55;
+  group.add(mist);
+  // solid striped lips on both edges, so the drop is impossible to miss
+  for (const z of [-0.44, 0.44]) {
+    const neighbour = z < 0 ? lane.nextType : lane.prevType;
+    if (neighbour === 'gap') continue;
+    M.box(group, WORLD_W, 0.4, 0.12, 0x3a3d55, 0, -0.2, z).castShadow = false;
+    M.hazardEdge(group, z, WORLD_W);
+    M.box(group, WORLD_W, 0.05, 0.03, z < 0 ? 0x35e6ff : 0xff4fd8, 0, -0.05, z + (z < 0 ? 0.065 : -0.065), true);
+  }
   M.bake(group);
+  if (lane.prevType !== 'gap') {
+    for (const x of [-HALF - 0.9, HALF + 0.9]) {
+      const sign = TX.hazardSprite('gap');
+      sign.position.set(x, 0.75, 0.35);
+      group.add(sign);
+    }
+  }
 
   const d = difficulty(lane.row);
   lane.dir = prev && prev.type === 'gap' ? -prev.dir : Math.random() < 0.5 ? 1 : -1;
@@ -765,11 +816,15 @@ function updateHazards(lane, dt) {
     t.mesh.material = t.phase === 'off' ? M.SHOCK_MATS.off
       : t.phase === 'warn' ? (flick ? M.SHOCK_MATS.warn : M.SHOCK_MATS.off)
       : (flick || Math.random() < 0.5 ? M.SHOCK_MATS.on : M.SHOCK_MATS.warn);
+    // the glyph and the hologram say what is coming: dim -> blinking yellow -> white hot
+    t.boltMat.color.setHex(t.phase === 'off' ? 0x8a7010 : t.phase === 'warn' ? (flick ? 0xffd21f : 0x8a7010) : 0xffffff);
+    t.sign.material.opacity = t.phase === 'off' ? 0.55 : 1;
+    t.sign.material.color.setHex(t.phase === 'on' ? 0xff9090 : 0xffffff);
+    t.sign.position.y = 1.0 + Math.sin(time * 3 + t.x) * 0.06;
     if (t.phase === 'on' && Math.random() < dt * 10) burst(t.x + rand(-0.4, 0.4), 0.1, -lane.row + rand(-0.4, 0.4), [0xbff8ff, 0x35e6ff], 1, 1.5);
   }
 
   updateBuild(lane, dt, near);
-  updateBridge(lane, dt);
 
   const pt = lane.patrol;
   if (pt && pt.mower) {
@@ -827,17 +882,6 @@ function buildWater(lane) {
 
   const d = difficulty(lane.row);
   lane.dir = prev && prev.type === 'water' ? -prev.dir : Math.random() < 0.5 ? 1 : -1;
-  if (lane.info.bridge) {
-    // bascule bridge: walk across while it is down
-    const entry = entryCells(prev);
-    let cx = randInt(-HALF + 1, HALF - 1);
-    for (let i = 0; i < 8 && entry && ![cx - 1, cx, cx + 1].some((x) => entry.has(x)); i++) cx = randInt(-HALF + 1, HALF - 1);
-    const br = M.liftBridge(group, cx, 3);
-    lane.speed = 0;
-    lane.movers = [];
-    lane.bridge = { cx, ...br, phase: 'down', t: rand(1.5, 3.5), angle: 0, bell: 0 };
-    return;
-  }
   if (lane.row > 10 && Math.random() < 0.3) {
     // anchored buoys: at least three spots inside the street, never moving
     lane.speed = 0;
@@ -856,6 +900,8 @@ function buildWater(lane) {
       group.add(mesh);
       return { mesh, len: 1, x, phase: rand(0, 6) };
     });
+    // the robot hops from buoy to buoy: neighbouring buoys chain sideways
+    lane.reach = reachCells(entry, cells.filter((x) => Math.abs(x) <= HALF));
     return;
   }
   lane.speed = rand(0.9, 1.6) * (1 + d * 0.5);
@@ -934,6 +980,9 @@ function updateBuild(lane, dt, near) {
     if (!B.list.some((b) => b.x === x)) {
       const mark = M.makeBeamMark();
       mark.position.x = x;
+      const sign = TX.hazardSprite('beam');
+      sign.position.y = 1.15;
+      mark.add(sign);
       lane.group.add(mark);
       B.list.push({ x, t: 0, mark, beam: null, phase: 'warn', beep: 0 });
     }
@@ -943,7 +992,9 @@ function updateBuild(lane, dt, near) {
     if (b.phase === 'warn') {
       const k = Math.min(1, b.t / 1.1);
       b.mark.userData.shadow.scale.setScalar(0.25 + k * 0.75);
-      b.mark.userData.ring.material.opacity = Math.floor(time * 10) % 2 ? 0.95 : 0.35;
+      const blink = Math.floor(time * 10) % 2;
+      b.mark.userData.ring.material.opacity = blink ? 0.95 : 0.35;
+      b.mark.userData.column.material.opacity = blink ? 0.85 : 0.35;
       b.beep -= dt;
       if (near && b.beep <= 0) { sfx.beamWarn(); b.beep = 0.3; }
       if (b.t >= 1.1) {
@@ -978,34 +1029,6 @@ function updateBuild(lane, dt, near) {
     }
   }
   B.list = B.list.filter((b) => b.phase !== 'done');
-}
-
-const onBridge = (lane, x) => lane.bridge.angle < 0.05 && Math.abs(x - lane.bridge.cx) <= 1.01;
-
-// Bascule bridge cycle: down -> warning (bell, red lights) -> raising -> up -> lowering.
-function updateBridge(lane, dt) {
-  const Br = lane.bridge;
-  if (!Br) return;
-  const k = (state === 'play' || state === 'menu') && P.alive ? clamp(1 - Math.abs(lane.row - P.row) / 6, 0, 1) : 0;
-  Br.t -= dt;
-  if (Br.t <= 0) {
-    const next = { down: ['warn', 1.3], warn: ['raise', 0.9], raise: ['up', rand(2, 2.8)], up: ['lower', 0.9], lower: ['down', rand(2.6, 4)] }[Br.phase];
-    Br.phase = next[0];
-    Br.t = next[1];
-    if ((Br.phase === 'raise' || Br.phase === 'lower') && k > 0) sfx.bridgeMotor(k);
-  }
-  const MAX = 1.25;
-  Br.angle = Br.phase === 'raise' ? MAX * (1 - Br.t / 0.9)
-    : Br.phase === 'up' ? MAX
-    : Br.phase === 'lower' ? MAX * (Br.t / 0.9) : 0;
-  Br.leaves[0].rotation.x = Br.angle;
-  Br.leaves[1].rotation.x = -Br.angle;
-  const red = Br.phase !== 'down' && (Br.phase !== 'warn' || Math.floor(time * 4.4) % 2 === 0);
-  for (const l of Br.lights) l.material = M.mat(red ? 0xff2b4a : 0x3dff7a, true);
-  if (Br.phase === 'warn' && k > 0) {
-    Br.bell -= dt;
-    if (Br.bell <= 0) { sfx.crossingBell(k * 0.8, Math.random() < 0.5 ? 1 : -1); Br.bell = 0.45; }
-  }
 }
 
 function placeMovers(lane, list, minGap) {
@@ -1102,7 +1125,7 @@ function updateLanes(dt) {
     }
     updateHazards(lane, dt);
     if (Math.abs(lane.row - P.row) < 14) {
-      NPC.updatePeople(lane, dt, { x: P.x, row: P.row, alive: P.alive && state !== 'menu', hop: !!P.hop }, time, (p) => {
+      NPC.updatePeople(lane, dt, { x: P.x, row: P.row, alive: P.alive && state !== 'menu' && !P.fly, hop: !!P.hop }, time, (p) => {
         burst(p.x, 1.0, -lane.row + p.z, [0xffffff, 0xbff8ff], 6, 1.5);
         sfx.photo();
       }, (p) => {
@@ -1224,6 +1247,7 @@ function updateSkyCars(dt) {
 // ---------------------------------------------------------------- player
 const robot = M.makeRobot();
 scene.add(robot.root);
+G.applyLook(robot, null, onRobotRebuilt);
 const P = {};
 let stepSign = 1;
 
@@ -1233,7 +1257,10 @@ function resetPlayer() {
     hop: null, queued: null,
     plat: null, platOff: 0,
     face: Math.PI, faceTarget: Math.PI,
+    jet: null, fly: null, shield: 0,
   });
+  jetPack.visible = false;
+  updateJetHud();
   robot.root.position.set(0, 0, 0);
   robot.root.rotation.set(0, Math.PI, 0);
   robot.root.scale.set(1, 1, 1);
@@ -1245,8 +1272,14 @@ const DIRS = { up: [0, 1, 0], down: [0, -1, Math.PI], left: [-1, 0, Math.PI / 2]
 
 function tryMove(dir) {
   if (paused) return;
-  if (state === 'menu') startGame();
+  if (state === 'menu') {
+    // taps start the run only from the main menu, never through an open garage / leaderboard
+    const sheetOpen = !$('garage').classList.contains('hidden') || !$('leaders').classList.contains('hidden');
+    if (dir === 'up' && !sheetOpen) playPressed();
+    return;
+  }
   if (state !== 'play' || !P.alive) return;
+  if (P.fly) { if (dir === 'left' || dir === 'right') P.fly.tx = clamp(P.fly.tx + (dir === 'left' ? -1 : 1), -HALF, HALF); return; }
   if (P.hop) { P.queued = dir; return; }
   const [dx, dr, face] = DIRS[dir];
   P.faceTarget = face;
@@ -1262,7 +1295,7 @@ function tryMove(dir) {
     let toX = dr === 0 ? Math.round(P.x) + dx : Math.round(P.x);
     if (isFloat(toLane.type) && dr !== 0) toX = P.x;
     if (Math.abs(toX) > HALF + 0.01) return;
-    if (toLane.blocked.has(Math.round(toX))) return;
+    if (toLane.blocked.has(Math.round(toX))) { P.bumpT = 0.25; sfx.bump(); return; }
     hop.toX = toX;
     P.plat = null;
   }
@@ -1300,10 +1333,7 @@ function land() {
     if (Math.abs(P.platOff) > half + 0.01 && !board(P.x, h.plat)) return fall();
   } else {
     P.x = h.toX;
-    if (lane.bridge) {
-      if (!onBridge(lane, P.x)) return die('water');
-      P.x = Math.round(P.x);
-    } else if (isFloat(lane.type) && !board(P.x)) return fall();
+    if (isFloat(lane.type) && !board(P.x)) return fall();
   }
 
   const surface = { safe: lane.info.style === 'park' ? 'grass' : 'stone', road: 'road', hover: 'road', gap: 'pad', water: 'boat' }[lane.type] ?? 'metal';
@@ -1324,6 +1354,8 @@ function land() {
 
   if (P.row > score) score = P.row;
   hud();
+  if (P.jet && P.jet.charge < 1) { P.jet.charge = Math.min(1, P.jet.charge + 1 / JET_STEPS); updateJetHud(); }
+  if (lane.info.center && !lane.used && state === 'play') { lane.used = true; enterCenter(); return; }
   if (lane.type === 'safe') saveRun();
   const D = districtAt(P.row);
   if (D !== district) {
@@ -1340,37 +1372,100 @@ function land() {
   }
 }
 
-function posePlayer(a) {
-  const s = stepSign * a;
-  if (robot.legs[0]) robot.legs[0].rotation.x = s * 0.7;
-  if (robot.legs[1]) robot.legs[1].rotation.x = -s * 0.7;
-  if (robot.arms[0]) robot.arms[0].rotation.x = -s * 0.9;
-  if (robot.arms[1]) robot.arms[1].rotation.x = s * 0.9;
+// One walking step (t = 0..1): the swing leg lifts, bends at the knee and reaches forward while
+// the stance leg pushes back; arms swing the other way, the body bobs a little.
+function posePlayer(a, t = 0) {
+  const [lL, lR] = robot.legs, [aL, aR] = robot.arms;
+  const swing = stepSign > 0 ? lR : lL;
+  const stance = stepSign > 0 ? lL : lR;
+  const reach = Math.sin(t * Math.PI);                 // 0 -> 1 -> 0
+  const fwd = -0.35 + t * 0.85;                         // swing leg travels from behind to in front
+  if (swing) {
+    swing.rotation.set(fwd * (0.4 + reach * 0.6), 0, 0);
+    swing.userData.knee && (swing.userData.knee.rotation.x = -reach * 1.1);
+  }
+  if (stance) {
+    stance.rotation.set(0.3 - t * 0.65, 0, 0);
+    stance.userData.knee && (stance.userData.knee.rotation.x = -0.15 * reach);
+  }
+  const armSwing = (t - 0.5) * 1.1;
+  const swingArm = stepSign > 0 ? aL : aR, otherArm = stepSign > 0 ? aR : aL;
+  if (swingArm) swingArm.rotation.set(armSwing, 0, stepSign > 0 ? -0.08 : 0.08);
+  if (otherArm) otherArm.rotation.set(-armSwing, 0, stepSign > 0 ? 0.08 : -0.08);
+  robot.model.rotation.x = -0.12 * reach;            // lean into the step
+  robot.model.rotation.z = 0;
+  robot.head.rotation.x = 0.06 * reach;
+  robot.head.rotation.y = 0;
+}
+
+// Standing still: breathing, a little arm sway; after a while it looks around and taps a foot.
+// On a boat or pad it balances with the arms out.
+function idlePose(dt) {
+  const [lL, lR] = robot.legs, [aL, aR] = robot.arms;
+  const idle = P.idle ?? 0;
+  const breathe = Math.sin(time * 2.4);
+  const riding = !!P.plat;
+  robot.model.rotation.x = 0;
+  robot.model.rotation.z = riding ? Math.sin(time * 2.2) * 0.06 : 0;
+  for (const l of [lL, lR]) if (l?.userData.knee) l.userData.knee.rotation.x *= 0.6; // knees settle
+  if (lL) { lL.rotation.set(0, 0, 0); }
+  if (lR) { lR.rotation.set(idle > 2.5 ? Math.max(0, Math.sin(time * 9)) * -0.25 : 0, 0, 0); }
+  const out = riding ? 0.55 + Math.sin(time * 2.2) * 0.12 : 0.04 + breathe * 0.03;
+  if (aL) { aL.rotation.set(Math.sin(time * 1.3) * 0.06, 0, -out); }
+  if (aR) { aR.rotation.set(-Math.sin(time * 1.3) * 0.06, 0, out); }
+  robot.head.rotation.x = 0;
+  robot.head.rotation.y = idle > 1.5 ? Math.sin((idle - 1.5) * 1.6) * 0.5 : 0;
+}
+
+function menuIdle() {
+  P.faceTarget = Math.PI * 0.86;
+  const t = time % 5;
+  const wave = t > 3.2 && t < 4.6 ? Math.sin(((t - 3.2) / 1.4) * Math.PI) : 0;
+  if (robot.arms[1]) {
+    robot.arms[1].rotation.z = wave * 2.5;
+    robot.arms[1].rotation.x = 0;
+    robot.arms[1].rotation.y = wave * Math.sin(time * 14) * 0.25;
+  }
+  robot.head.rotation.y = Math.sin(time * 0.7) * 0.35;
 }
 
 function updatePlayer(dt) {
   if (!P.alive) return;
   const pos = robot.root.position;
+  P.shield = Math.max(0, (P.shield ?? 0) - dt);
+  if (P.fly) { updateFly(dt); return; }
   if (P.hop) {
     const h = P.hop;
     h.t = Math.min(1, h.t + dt / HOP_TIME);
     P.x = h.side ? h.plat.x + lerp(h.fromOff, h.toOff, h.t) : lerp(h.fromX, h.toX, h.t);
     P.z = lerp(h.fromZ, h.toZ, h.t);
     const arc = Math.sin(Math.PI * h.t);
-    pos.set(P.x, arc * 0.45, P.z);
-    robot.body.scale.set(1 - arc * 0.06, 1 + arc * 0.12, 1 - arc * 0.06);
+    // a step, not a jump: the body only bobs; on boats/pads a small hop is still needed
+    const lift = isFloat(lanes.get(P.row)?.type) || h.side ? 0.3 : 0.16;
+    pos.set(P.x, arc * lift, P.z);
+    robot.body.scale.set(1, 1 + arc * 0.04, 1);
     robot.body.position.y = 0;
-    posePlayer(arc);
-    if (h.t >= 1) land();
+    posePlayer(arc, h.t);
+    if (h.t >= 1) { land(); P.landT = 0.12; }
   } else {
     if (P.plat) {
       P.x = P.plat.x + P.platOff;
       if (Math.abs(P.x) > HALF + 0.7) return die('drift');
     }
+    // springy landing, then breathing
+    P.landT = Math.max(0, (P.landT ?? 0) - dt);
+    const land = P.landT / 0.16;
+    const squash = Math.sin(land * Math.PI) * 0.07;
     pos.set(P.x, 0, P.z);
-    robot.body.scale.set(1, 1, 1);
-    robot.body.position.y = Math.abs(Math.sin(time * 2.5)) * 0.02;
-    posePlayer(0);
+    robot.body.scale.set(1 + squash * 0.5, 1 - squash + Math.sin(time * 2.4) * 0.008, 1 + squash * 0.5);
+    robot.body.position.y = 0;
+    idlePose(dt);
+    if (state === 'menu') menuIdle();
+  }
+  // bumping into an obstacle: a short shudder
+  if (P.bumpT > 0) {
+    P.bumpT -= dt;
+    robot.model.rotation.z = Math.sin(P.bumpT * 60) * 0.06 * (P.bumpT / 0.25);
   }
   const blink = time % 3.4 < 0.12 ? 0.15 : 1;
   for (const e of robot.eyes) e.scale.y = blink;
@@ -1380,7 +1475,7 @@ function updatePlayer(dt) {
 }
 
 function checkHits() {
-  if (!P.alive || state !== 'play') return;
+  if (!P.alive || state !== 'play' || P.fly || P.shield > 0) return;
   const { x, z } = robot.root.position;
   const lane = lanes.get(Math.round(-z));
   if (!lane) return;
@@ -1395,10 +1490,247 @@ function checkHits() {
   }
   if (lane.patrol && Math.abs(lane.patrol.x - x) < 0.5) return die(lane.patrol.mower ? 'mower' : 'patrol');
   if (lane.crane && Math.abs(lane.crane.hitX - x) < 0.75) return die('crane', Math.sign(Math.cos(lane.crane.ph)) || 1);
-  if (lane.bridge && !P.hop && lane.bridge.angle > 0.15) return die('water');
   for (const t of lane.tiles) {
     if (t.phase === 'on' && !P.hop && Math.abs(x - t.x) < 0.45) return die('shock');
   }
+}
+
+// ---------------------------------------------------------------- flight center & jetpack
+// Stepping onto a flight center row opens the wind-tunnel training; passing it gives a jetpack
+// for the rest of this run. It recharges by steps; when full, the robot flies over the street
+// like the Subway Surfers jetpack: swipe between lanes, grab a few tokens, land safely.
+// Balance: ~8 s of flight (about 35 rows), then 80 steps on foot to recharge.
+const JET_STEPS = 80;
+const JET_TIME = 8;
+const JET_SPEED = 4.2; // rows per second while cruising
+const JET_ROWS = Math.round(JET_TIME * JET_SPEED);
+const FLY_Y = 7.2;  // above the traffic and the monorail viaducts
+
+const jetPack = M.makeJetpack();
+jetPack.position.set(0, 0.95, 0.17);
+jetPack.visible = false;
+robot.model.add(jetPack);
+
+// palm and boot thrusters (Iron Man style), hidden until flying; re-attached when the garage
+// swaps the robot's body
+const thrusters = [];
+function attachThrusters() {
+  for (const f of thrusters) f.parent?.remove(f);
+  thrusters.length = 0;
+  for (const arm of robot.arms) {
+    for (const [w, c, y] of [[0.09, 0x9ff3ff, -0.56], [0.05, 0xffffff, -0.54]]) {
+      const f = new THREE.Mesh(new THREE.BoxGeometry(w, 0.22, w), new THREE.MeshBasicMaterial({ color: c }));
+      f.position.set(arm.position.x > 0 ? 0.035 : -0.035, y, 0);
+      f.visible = false;
+      arm.add(f);
+      thrusters.push(f);
+    }
+  }
+  for (const leg of robot.legs) {
+    const knee = leg.userData.knee;
+    for (const [w, c, y] of [[0.1, 0xffa21a, -0.58], [0.05, 0xfff1a8, -0.55]]) {
+      const f = new THREE.Mesh(new THREE.BoxGeometry(w, 0.24, w), new THREE.MeshBasicMaterial({ color: c }));
+      f.position.set(0, y, 0);
+      f.visible = false;
+      knee.add(f);
+      thrusters.push(f);
+    }
+  }
+}
+attachThrusters();
+function onRobotRebuilt() { attachThrusters(); }
+
+function updateJetHud() {
+  const btn = $('jetbtn');
+  if (!btn) return;
+  btn.classList.toggle('hidden', !P.jet);
+  if (!P.jet) return;
+  btn.style.setProperty('--c', `${Math.round(P.jet.charge * 360)}deg`);
+  btn.classList.toggle('ready', P.jet.charge >= 1 && !P.fly);
+}
+
+async function enterCenter() {
+  sfx.center();
+  if (P.jet) {
+    // already trained in this run: just refuel
+    P.jet.charge = 1;
+    updateJetHud();
+    toast('ДЖЕТПАК ЗАПРАВЛЕН');
+    saveRun();
+    return;
+  }
+  state = 'mini';
+  // the training starts fresh: the security drone leaves and the street hums go quiet
+  if (hunter) { scene.remove(hunter.mesh); hunter = null; }
+  $('danger').style.opacity = 0;
+  for (const h of ['patrol', 'scanner', 'water', 'hunter', 'jet']) sfx.hum(h, 0, 0);
+  document.body.classList.add('in-mini');
+  const ok = await wiresGame(phone);
+  document.body.classList.remove('in-mini');
+  state = 'play';
+  P.idle = 0;
+  last = performance.now();
+  if (ok) {
+    P.jet = { charge: 1 };
+    jetPack.visible = true;
+    updateJetHud();
+    toast('НАВЫК: ДЖЕТПАК');
+    haptic('success');
+  }
+  saveRun();
+}
+
+function useJet() {
+  if (state !== 'play' || !P.alive || P.hop || P.fly || paused || !P.jet || P.jet.charge < 1) return;
+  P.jet.charge = 0;
+  P.plat = null;
+  P.faceTarget = 0;
+  const F = { phase: 'up', t: 0, rowF: P.row, start: P.row, x: P.x, tx: Math.round(P.x), y: 0, items: [], land: null };
+  // only a few tokens in the air: three short lines of three, each in some lane
+  for (let r = P.row + randInt(6, 9); r < P.row + JET_ROWS - 3; r += randInt(9, 12)) {
+    const lane = randInt(-2, 2);
+    for (let i = 0; i < 3; i++) {
+      const mesh = M.makeCoin();
+      mesh.position.set(lane, FLY_Y + 0.35, -(r + i));
+      scene.add(mesh);
+      F.items.push({ x: lane, z: -(r + i), mesh });
+    }
+  }
+  P.fly = F;
+  updateJetHud();
+  sfx.jetStart();
+  haptic('medium');
+  for (const f of jetPack.userData.flames) f.visible = true;
+}
+
+// first sidewalk at or after `row`, and the free cell nearest to x
+function findLanding(row, x) {
+  ensureLanes(row + 20);
+  for (let r = row; r < row + 20; r++) {
+    const lane = lanes.get(r);
+    if (!lane || lane.type !== 'safe') continue;
+    const free = freeCells(lane);
+    if (!free.length) continue;
+    return { row: r, x: free.sort((a, b) => Math.abs(a - x) - Math.abs(b - x))[0] };
+  }
+  return { row, x: 0 };
+}
+
+function updateFly(dt) {
+  const F = P.fly;
+  const pos = robot.root.position;
+  F.t += dt;
+  if (F.phase === 'up') {
+    // blast off over the traffic
+    F.y += (FLY_Y + 0.2 - F.y) * Math.min(1, dt * 4);
+    F.rowF += JET_SPEED * 0.6 * dt;
+    if (F.y > FLY_Y - 0.3) { F.phase = 'cruise'; F.cruiseT = 0; }
+  } else if (F.phase === 'cruise') {
+    F.cruiseT += dt;
+    F.y += (FLY_Y - F.y) * Math.min(1, dt * 4) + Math.sin(time * 3) * 0.004;
+    F.rowF += JET_SPEED * dt;
+    // the button ring drains while flying
+    $('jetbtn').style.setProperty('--c', `${Math.round(Math.max(0, 1 - F.cruiseT / JET_TIME) * 360)}deg`);
+    if (F.cruiseT >= JET_TIME) { F.phase = 'land'; F.land = findLanding(Math.ceil(F.rowF) + 3, F.tx); F.tx = F.land.x; F.y0 = F.y; F.r0 = F.rowF; }
+  } else {
+    // glide down onto the landing sidewalk
+    const total = Math.max(0.5, F.land.row - F.r0);
+    F.rowF = Math.min(F.land.row, F.rowF + JET_SPEED * 0.8 * dt);
+    const k = Math.min(1, (F.rowF - F.r0) / total);
+    F.y = F.y0 * (1 - k * k * (3 - 2 * k));
+    if (k >= 1 && Math.abs(F.x - F.tx) < 0.05) { F.y = 0; return endFlight(); }
+  }
+  // lane change: quick slide with a bank, like a swipe in Subway Surfers
+  F.x += (F.tx - F.x) * Math.min(1, dt * 12);
+  P.x = F.x;
+  P.z = -F.rowF;
+  P.row = Math.round(F.rowF);
+  // the distance counter keeps ticking up row by row while flying
+  if (P.row > score) { score = P.row; hud(); }
+  pos.set(F.x, F.y, P.z);
+
+  const rz = pos.z;
+  for (const it of F.items) {
+    if (it.done) continue;
+    it.mesh.rotation.y += dt * 4;
+    if (Math.abs(it.z - rz) < 0.5 && Math.abs(it.x - F.x) < 0.5 && F.y > FLY_Y * 0.6) {
+      it.done = true;
+      scene.remove(it.mesh);
+      coins++;
+      store.set('coins', coins);
+      sfx.coin();
+      hud();
+    } else if (it.z > rz + 0.6) {
+      it.done = true;
+      scene.remove(it.mesh);
+    }
+  }
+
+  // Iron Man pose: body flat, head first, arms along the body with palm thrusters,
+  // legs together with boot thrusters; banks into turns
+  const level = F.phase === 'land' ? Math.max(0, Math.min(1, F.y / FLY_Y)) : Math.min(1, F.t / 0.45);
+  const [lL, lR] = robot.legs, [aL, aR] = robot.arms;
+  robot.model.rotation.x = -1.3 * level;
+  robot.model.position.set(0, 0.35 * level, 0.15 * level);
+  robot.root.rotation.z = (F.tx - F.x) * -0.45;
+  if (lL) { lL.rotation.set(0.05 * level, 0, -0.03); lL.userData.knee && (lL.userData.knee.rotation.x = -0.1 * level); }
+  if (lR) { lR.rotation.set(0.05 * level, 0, 0.03); lR.userData.knee && (lR.userData.knee.rotation.x = -0.15 * level); }
+  if (aL) aL.rotation.set(0.15 * level, 0, -0.22 * level);
+  if (aR) aR.rotation.set(0.15 * level, 0, 0.22 * level);
+  robot.head.rotation.set(1.0 * level, 0, 0);
+  robot.body.scale.set(1, 1, 1);
+  for (const f of jetPack.userData.flames) f.scale.y = 0.7 + Math.random() * 0.6;
+  for (const f of thrusters) { f.visible = true; f.scale.y = 0.6 + Math.random() * 0.7; }
+  if (Math.random() < 0.35) burst(F.x + rand(-0.15, 0.15), F.y + 0.3, rz + 0.35, [0xffa21a, 0xfff1a8, 0x9ff3ff], 1, 0.4);
+  if (F.phase === 'cruise' && Math.random() < 0.6) streak(F.x + rand(-3, 3), F.y + rand(-1.5, 1.5), rz - rand(4, 9));
+  sfx.hum('jet', F.phase === 'land' ? 0.4 : 1, 0);
+  const d = ((P.faceTarget - P.face + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+  P.face += d * Math.min(1, dt * 22);
+  robot.root.rotation.y = P.face;
+}
+
+const streaks = [];
+const STREAK = new THREE.MeshBasicMaterial({ color: 0xe8f4ff, transparent: true, opacity: 0.45, depthWrite: false });
+const STREAK_GEO = new THREE.BoxGeometry(0.025, 0.025, 1.4);
+function streak(x, y, z) {
+  const m = new THREE.Mesh(STREAK_GEO, STREAK);
+  m.position.set(x, y, z);
+  scene.add(m);
+  streaks.push({ m, life: 0.45 });
+}
+function updateStreaks(dt) {
+  for (let i = streaks.length - 1; i >= 0; i--) {
+    const s = streaks[i];
+    s.life -= dt;
+    s.m.position.z += dt * 22;
+    if (s.life <= 0) { scene.remove(s.m); streaks.splice(i, 1); }
+  }
+}
+
+function endFlight() {
+  const F = P.fly;
+  for (const it of F.items) if (!it.done) scene.remove(it.mesh);
+  P.fly = null;
+  robot.model.position.set(0, 0, 0);
+  robot.root.rotation.z = 0;
+  for (const f of thrusters) f.visible = false;
+  P.row = F.land.row;
+  P.x = F.land.x;
+  P.z = -F.land.row;
+  P.plat = null;
+  P.shield = 1.5; // a moment of safety after landing, as in Subway Surfers
+  P.landT = 0.16;
+  P.idle = 0;
+  robot.root.position.set(P.x, 0, P.z);
+  robot.model.rotation.set(0, 0, 0);
+  for (const f of jetPack.userData.flames) f.visible = false;
+  sfx.hum('jet', 0, 0);
+  sfx.jetLand();
+  burst(P.x, 0.1, P.z, [0xc8b898, 0xffffff], 10, 2);
+  if (P.row > score) score = P.row;
+  hud();
+  updateJetHud();
+  saveRun();
 }
 
 // ---------------------------------------------------------------- death & effects
@@ -1566,8 +1898,8 @@ function updateHunter(dt, threat) {
   // comes down in front of the robot (in view), then slides over it
   hunter.mesh.position.set(
     hunter.mesh.position.x + (pos.x - hunter.mesh.position.x) * Math.min(1, dt * 4),
-    lerp(5.5, -0.4, lv),
-    pos.z - lerp(5, 0.2, lv),
+    lerp(5.5, 1.9, lv),
+    pos.z - lerp(5, 0.7, lv),
   );
   for (const r of u.rotors) r.rotation.y += dt * 50;
   u.head.rotation.y = Math.sin(time * 3) * 0.3;
@@ -1589,24 +1921,88 @@ function updateHunter(dt, threat) {
 
 // ---------------------------------------------------------------- camera
 let camRow = 0, camX = 0;
+const chasePos = new THREE.Vector3(), chaseLook = new THREE.Vector3();
+const menuPos = new THREE.Vector3(), menuLook = new THREE.Vector3();
+const camPos = new THREE.Vector3(), camLook = new THREE.Vector3();
+let camInit = false;
+let camLift = 0;
+const flyPos = new THREE.Vector3(), flyLook = new THREE.Vector3();
+let menuView = 'main';
+// garage framing: robot height to fit (with a hat), its share of the screen height, and how far
+// above the screen middle it stands (the shop sheet covers the lower 54 %)
+const GARAGE_FIT = { height: 1.5, share: 0.28, shift: 0.23, fov: 50 };
+let garageK = 0;
+let introAt = 0;
 const camTarget = new THREE.Vector3();
 
 function updateCamera(dt) {
   const vis = -robot.root.position.z;
   if (state === 'play') camRow += (0.28 + Math.min(score / 250, 0.5)) * dt;
-  if (P.alive && vis > camRow) camRow += (vis - camRow) * Math.min(1, dt * 3);
+  if (P.alive && vis > camRow) camRow += (vis - camRow) * Math.min(1, dt * (P.fly ? 9 : 3));
   // Standing still or falling behind the camera calls the security drone.
-  if (state === 'play' && P.alive) P.idle = P.hop ? 0 : (P.idle ?? 0) + dt;
+  if (state === 'play' && P.alive) P.idle = P.hop || P.fly ? 0 : (P.idle ?? 0) + dt;
   const threat = state === 'play' && P.alive
     ? clamp(Math.max((camRow - vis - 1.8) / 2.4, ((P.idle ?? 0) - 4) / 3.5), 0, 1) : 0;
-  updateHunter(dt, threat);
-  if (threat >= 1) die('drone');
+  // the drone only lives while the game runs: a frozen frame (pause) never moves or grabs
+  if (!paused) {
+    updateHunter(dt, threat);
+    if (threat >= 1) die('drone');
+  }
   camX += (clamp(P.x, -2, 2) * 0.5 - camX) * Math.min(1, dt * 3);
 
   const z = -camRow;
-  camera.position.set(camX + CAM_SIDE, CAM_UP, z + CAM_BACK);
-  camTarget.set(camX * 0.6 - 0.4, 0, z - LOOK_AHEAD);
-  camera.lookAt(camTarget);
+  chasePos.set(camX + CAM_SIDE, CAM_UP, z + CAM_BACK);
+  chaseLook.set(camX * 0.6 - 0.4, 0, z - LOOK_AHEAD);
+  // Jetpack: Subway Surfers style third-person view right behind the flying robot, wider FOV
+  camLift += ((P.fly && (P.fly.phase !== 'land' || P.fly.y > 1.5) ? 1 : 0) - camLift) * Math.min(1, dt * (P.fly ? 4 : 2.5));
+  if (camLift > 0.001) {
+    const rp = robot.root.position;
+    // further back and higher than before, so the trail ahead is visible
+    flyPos.set(rp.x * 0.7, rp.y + 1.75, rp.z + 3.6);
+    flyLook.set(rp.x * 0.6, rp.y - 0.35, rp.z - 8);
+    chasePos.lerp(flyPos, camLift);
+    chaseLook.lerp(flyLook, camLift);
+  }
+  // the garage uses its own narrow lens, so the robot is never stretched on tall screens
+  garageK += ((state === 'menu' && menuView === 'garage' ? 1 : 0) - garageK) * Math.min(1, dt * 5);
+  const flyFov = THREE.MathUtils.lerp(baseFov * (1 - 0.14 * camLift), GARAGE_FIT.fov, garageK);
+  if (Math.abs(camera.fov - flyFov) > 0.05) {
+    camera.fov = flyFov;
+    camera.updateProjectionMatrix();
+  }
+  if (state === 'menu' || state === 'intro') {
+    // menu: low camera behind the robot, which turns to face us, the street glowing beyond
+    const rp = robot.root.position;
+    const close = menuView === 'garage';
+    // garage: the whole robot fits between the top bar and the shop sheet on any screen. The
+    // distance comes from the FOV; the camera tilts down so the robot sits in the upper part.
+    let want, look;
+    if (state === 'intro') { want = chasePos; look = chaseLook; }
+    else if (close) {
+      const t = Math.tan(THREE.MathUtils.degToRad(GARAGE_FIT.fov / 2));
+      const d = GARAGE_FIT.height / (2 * GARAGE_FIT.share * t);
+      const below = d * GARAGE_FIT.shift * 2 * t; // aim this far below the robot's middle
+      want = menuPos.set(rp.x + d * 0.08, 0.62, rp.z + d);
+      look = menuLook.set(rp.x, 0.62 - below, rp.z);
+    } else {
+      want = menuPos.set(rp.x + 0.4, 0.95, rp.z + 2.3);
+      look = menuLook.set(rp.x + 0.06, 0.5, rp.z);
+    }
+    const k = state === 'intro' ? Math.min(1, dt * 4.5) : Math.min(1, dt * 3);
+    if (!camInit) { camPos.copy(want); camLook.copy(look); camInit = true; }
+    camPos.lerp(want, k);
+    camLook.lerp(look, k);
+    camera.position.copy(camPos);
+    camera.lookAt(camLook);
+    camTarget.copy(chaseLook);
+    if (state === 'intro' && (camPos.distanceTo(chasePos) < 0.08 || time - introAt > 1.4)) startGame();
+  } else {
+    camera.position.copy(chasePos);
+    camera.lookAt(chaseLook);
+    camPos.copy(chasePos);
+    camLook.copy(chaseLook);
+    camTarget.copy(chaseLook);
+  }
   sun.position.copy(camTarget).add(SUN_OFF);
   sun.target.position.copy(camTarget);
 
@@ -1639,11 +2035,28 @@ function hud() {
   $('coin-count').textContent = coins;
 }
 
+function playPressed() {
+  if (state !== 'menu') return;
+  if (tryOn) { tryOn = null; G.applyLook(robot, null, onRobotRebuilt); }
+  state = 'intro';
+  introAt = time;
+  menuView = 'main';
+  P.faceTarget = 0;
+  if (robot.arms[1]) robot.arms[1].rotation.set(0, 0, 0);
+  robot.head.rotation.y = 0;
+  $('menu').classList.add('hidden');
+  $('garage').classList.add('hidden');
+  document.body.classList.remove('in-garage');
+  $('leaders').classList.add('hidden');
+  document.body.classList.remove('in-menu');
+  sfx.start();
+}
+
 function startGame() {
   state = 'play';
   clearRun();
-  sfx.start();
   $('menu').classList.add('hidden');
+  document.body.classList.remove('in-menu');
 }
 
 function showOver() {
@@ -1656,14 +2069,36 @@ function showOver() {
   $('new-best').classList.toggle('hidden', !isNew);
   $('over').classList.remove('hidden');
   if (isNew) { haptic('success'); sfx.newBest(); }
+  // the score goes up first, then the board shows the top 3 and the player's own place
+  const board = $('over-board');
+  board.classList.toggle('hidden', !LB.enabled());
+  if (LB.enabled()) {
+    board.innerHTML = '<div class="b-head">ЛИДЕРЫ</div><div class="b-note">ЗАГРУЗКА...</div>';
+    LB.submit(score).finally(() => renderOverBoard(board));
+  }
   hud();
+}
+
+const escHtml = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+async function renderOverBoard(board) {
+  try {
+    const data = await LB.load(3);
+    if (state !== 'over') return;
+    const rows = data.top.map((r, i) => `<div class="b-row p${i + 1}"><span class="b-rank">${i + 1}</span><span class="b-name">${escHtml(r.name)}</span><b>${r.score}</b></div>`).join('');
+    const me = data.me
+      ? `<div class="b-row me"><span class="b-rank">${data.me.rank}</span><span class="b-name">ТЫ</span><b>${data.me.score}</b></div>`
+      : `<div class="b-note">Твоё место появится после игры в Telegram</div>`;
+    board.innerHTML = `<div class="b-head">ЛИДЕРЫ</div>${rows || '<div class="b-note">Пока никого. Будь первым!</div>'}${me}`;
+  } catch {
+    board.innerHTML = '<div class="b-head">ЛИДЕРЫ</div><div class="b-note">Нет связи с сервером рекордов</div>';
+  }
 }
 
 // Checkpoint: the last sidewalk the robot stood on (run seed + position + score + time of day).
 function saveRun(cloud = false) {
-  if (state !== 'play' || !P.alive || P.row <= 0) return;
+  if (state !== 'play' || !P.alive || P.row <= 0 || window.rc?.god) return;
   const lane = lanes.get(P.row);
-  if (lane && lane.type === 'safe' && !P.hop) checkpoint = { seed: runSeed, row: P.row, x: Math.round(P.x), score, phase: env.phase, t: Date.now() };
+  if (lane && lane.type === 'safe' && !P.hop) checkpoint = { seed: runSeed, row: P.row, x: Math.round(P.x), score, phase: env.phase, jet: P.jet ? P.jet.charge : null, t: Date.now() };
   if (!checkpoint) return;
   const data = JSON.stringify(checkpoint);
   store.set('run', data, cloud);
@@ -1704,6 +2139,8 @@ function newWorld(save = null) {
     let x = clamp(save.x, -HALF, HALF);
     if (lane.blocked.has(x)) x = freeCells(lane).sort((a, b) => Math.abs(a - x) - Math.abs(b - x))[0] ?? 0;
     Object.assign(P, { row, z: -row, x, face: 0, faceTarget: 0 });
+    if (save.jet != null) { P.jet = { charge: save.jet }; jetPack.visible = true; updateJetHud(); }
+    if (lane.info.center) lane.used = true;
     robot.root.position.set(x, 0, -row);
     camRow = row;
     score = save.score;
@@ -1716,6 +2153,9 @@ function newWorld(save = null) {
   } else {
     ensureLanes(46);
     $('menu').classList.remove('hidden');
+    document.body.classList.add('in-menu');
+    menuView = 'main';
+    camInit = false;
   }
   hud();
 }
@@ -1736,6 +2176,7 @@ function setPause(on, title = 'ПАУЗА') {
 }
 // Minimizing Telegram (or the browser tab) pauses the run and silences everything until it is back.
 function appHidden(hidden) {
+  if (window.rc?.god) return; // debug runs keep going in a hidden preview
   if (hidden) setPause(true);
   setAudioPaused(hidden);
 }
@@ -1780,12 +2221,169 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   if (state === 'over' && (e.code === 'Enter' || e.code === 'Space')) { newWorld(); return; }
   if (e.code === 'Escape' || e.code === 'KeyP') { setPause(!paused); return; }
+  if (e.code === 'KeyJ' || e.code === 'ShiftLeft') { useJet(); return; }
   if (paused && (e.code === 'Enter' || e.code === 'Space')) { setPause(false); return; }
+  if (state === 'menu' && (e.code === 'Enter' || e.code === 'Space')) { tryMove('up'); return; }
   const dir = KEYS[e.code];
   if (dir) { e.preventDefault(); sfx.unlock(); tryMove(dir); }
 });
 
-$('restart').addEventListener('click', () => { sfx.click(); newWorld(); });
+$('restart').addEventListener('click', () => { sfx.click(); newWorld(); playPressed(); });
+$('tomenu').addEventListener('click', () => { sfx.click(); newWorld(); });
+$('play').addEventListener('click', () => { sfx.unlock(); playPressed(); });
+$('btn-garage').addEventListener('click', () => { sfx.unlock(); sfx.click(); openGarage(); });
+$('btn-leaders').addEventListener('click', () => { sfx.unlock(); sfx.click(); openLeaders(); });
+$('garage-close').addEventListener('click', () => { sfx.click(); closeSheets(); });
+$('leaders-close').addEventListener('click', () => { sfx.click(); closeSheets(); });
+
+function closeSheets() {
+  // leaving the garage drops anything that was only tried on
+  if (tryOn) { tryOn = null; G.applyLook(robot, null, onRobotRebuilt); }
+  $('garage').classList.add('hidden');
+  $('leaders').classList.add('hidden');
+  $('menu').classList.remove('hidden');
+  document.body.classList.remove('in-garage');
+  menuView = 'main';
+}
+
+async function openLeaders() {
+  menuView = 'main';
+  $('menu').classList.add('hidden');
+  $('leaders').classList.remove('hidden');
+  const list = $('leaders-list');
+  const me = $('leaders-me');
+  me.innerHTML = '';
+  if (!LB.enabled()) {
+    list.innerHTML = '<div class="empty">Таблица лидеров скоро заработает.<br><br>Ваш рекорд: ' + best + '</div>';
+    return;
+  }
+  list.innerHTML = '<div class="empty">ЗАГРУЗКА...</div>';
+  try {
+    const data = await LB.load(50);
+    const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    list.innerHTML = data.top.length
+      ? data.top.map((r, i) => `<div class="r"><span>${i + 1}</span><span class="n">${esc(r.name)}</span><b>${r.score}</b></div>`).join('')
+      : '<div class="empty">Пока никого. Будь первым!</div>';
+    if (data.me) me.innerHTML = `<div class="r"><span>${data.me.rank}</span><span class="n">ВЫ</span><b>${data.me.score}</b></div>`;
+  } catch {
+    list.innerHTML = '<div class="empty">Нет связи с сервером рекордов</div>';
+  }
+}
+
+let garageTab = 'model';
+let tryOn = null; // { cat, id, model? } being previewed but not owned (model: a robot still on try-on)
+function openGarage() {
+  menuView = 'garage';
+  tryOn = null;
+  $('menu').classList.add('hidden');
+  $('garage').classList.remove('hidden');
+  document.body.classList.add('in-garage');
+  renderGarage();
+}
+
+// pixel icons for robots and head accessories (14x14 grid)
+const ICON_HEAD = '<path fill="#4a4e6a" d="M3 6h8v7H3z"/><path fill="#f4f6ff" d="M4 8h2v3H4zM8 8h2v3H8z"/>';
+const ICONS = {
+  'model:rr': '<path fill="#1a1b21" d="M3 2h8v8H3z"/><path fill="#3a3b46" d="M2 4h1v4H2zM11 4h1v4h-1z"/><path fill="#f4f6ff" d="M5 5h1v2H5zM8 5h1v2H8z"/><path fill="#d9dce4" d="M4 10h6v4H4z"/><path fill="#d6a124" d="M6 11h2v2H6z"/>',
+  'model:titan': '<path fill="#8e93a3" d="M3 2h8v8H3z"/><path fill="#c8ccd6" d="M3 2h8v2H3zM5 8h4v2H5z"/><path fill="#1c1d24" d="M3 5h8v2H3z"/><path fill="#e8faff" d="M4 5h2v1H4zM8 5h2v1H8z"/><path fill="#c8ccd6" d="M4 10h6v4H4z"/><path fill="#e0202c" d="M6 11h2v2H6z"/>',
+  'acc:none': ICON_HEAD,
+  'acc:antenna': ICON_HEAD + '<path fill="#8a90a4" d="M9 2h1v4H9z"/><path fill="#35e6ff" d="M8 0h3v2H8z"/>',
+  'acc:shades': ICON_HEAD + '<path fill="#15161c" d="M2 8h10v2H2z"/><path fill="#35e6ff" d="M3 8h3v1H3zM8 8h3v1H8z"/>',
+  'acc:cap': ICON_HEAD + '<path fill="#ff3a5a" d="M3 3h8v3H3zM0 5h3v1H0z"/><path fill="#fff" d="M6 3h2v1H6z"/>',
+  'acc:mohawk': ICON_HEAD + '<path fill="#ff4fd8" d="M6 1h2v5H6zM5 3h1v3H5zM8 3h1v3H8z"/>',
+  'acc:catears': ICON_HEAD + '<path fill="#8a90a4" d="M3 3h2v3H3zM9 3h2v3H9z"/><path fill="#ff4fd8" d="M4 4h1v2H4zM9 4h1v2H9z"/>',
+  'acc:headphones': ICON_HEAD + '<path fill="#c9ccd8" d="M3 4h8v1H3zM2 5h1v2H2zM11 5h1v2h-1z"/><path fill="#35e6ff" d="M1 7h2v4H1zM11 7h2v4h-2z"/>',
+  'acc:horns': ICON_HEAD + '<path fill="#f0e6d2" d="M3 3h2v3H3zM9 3h2v3H9zM2 1h2v2H2zM10 1h2v2h-2z"/><path fill="#ff3a5a" d="M1 0h2v1H1zM11 0h2v1h-2z"/>',
+  'acc:halo': ICON_HEAD + '<path fill="#ffe066" d="M4 1h6v1H4zM3 2h1v1H3zM10 2h1v1h-1zM4 3h6v1H4z"/>',
+  'acc:propeller': ICON_HEAD + '<path fill="#35e6ff" d="M4 4h6v2H4z"/><path fill="#8a90a4" d="M7 2h1v2H7z"/><path fill="#ff3a5a" d="M2 1h10v1H2z"/>',
+  'acc:tophat': ICON_HEAD + '<path fill="#20212a" d="M1 5h12v1H1zM4 0h6v5H4z"/><path fill="#ff3a5a" d="M4 3h6v1H4z"/>',
+  'acc:crown': ICON_HEAD + '<path fill="#ffc83a" d="M3 3h8v3H3zM3 1h1v2H3zM6 1h2v2H6zM10 1h1v2h-1z"/><path fill="#ff3a5a" d="M6 4h2v1H6z"/>',
+};
+// tab icons (12x12)
+const TAB_ICONS = {
+  model: '<path fill="#c9ccd8" d="M2 0h8v7H2zM3 8h6v4H3z"/><path fill="#1a1b21" d="M3 2h6v3H3z"/><path fill="#35e6ff" d="M4 3h1v1H4zM7 3h1v1H7z"/>',
+  body: '<path fill="#d9dce4" d="M2 1h8v8H2z"/><path fill="#a8acb8" d="M0 1h2v6H0zM10 1h2v6h-2zM2 7h8v2H2z"/><path fill="#5a5e70" d="M4 9h4v3H4z"/>',
+  accent: '<path fill="#ffd21f" d="M5 0h2v2h1v2h1v5H8v2H4V9H3V4h1V2h1z"/><path fill="#fff6c0" d="M4 5h1v3H4z"/>',
+  trim: '<path fill="#8a90a4" d="M3 0h6v2h2v2h1v4h-1v2H9v2H3v-2H1V8H0V4h1V2h2z"/><path fill="#1a1c3a" d="M4 4h4v4H4z"/>',
+  eyes: '<path fill="#f4f6ff" d="M2 3h8v1h2v4h-2v1H2V8H0V4h2z"/><path fill="#35e6ff" d="M4 4h4v4H4z"/><path fill="#1a1c3a" d="M5 5h2v2H5z"/>',
+  acc: '<path fill="#ffc83a" d="M0 3h2v2h1V2h2v2h2V2h2v3h1V3h2v8H0z"/><path fill="#ff3a5a" d="M5 6h2v2H5z"/>',
+};
+const svgUrl = (body, size) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges">${body}</svg>`)}`;
+const iconUrl = (key) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14" shape-rendering="crispEdges">${ICONS[key]}</svg>`)}`;
+const hex = (c) => `#${c.toString(16).padStart(6, '0')}`;
+const COIN = '<i class="coin-ico"></i>';
+
+function renderGarage() {
+  $('garage-coins').textContent = coins;
+  $('garage-tabs').innerHTML = '';
+  for (const c of G.CATEGORIES) {
+    const b = document.createElement('button');
+    b.innerHTML = `<img src="${svgUrl(TAB_ICONS[c.id], 12)}" alt=""><span>${c.name}</span>`;
+    b.className = c.id === garageTab ? 'on' : '';
+    b.onclick = () => { sfx.click(); garageTab = c.id; renderGarage(); };
+    $('garage-tabs').appendChild(b);
+  }
+  $('garage-items').innerHTML = '';
+  const cat = G.CATEGORIES.find((c) => c.id === garageTab);
+  // a robot that is only being tried on stays on screen while its colours are browsed
+  const shownModel = tryOn ? (tryOn.cat === 'model' ? tryOn.id : tryOn.model ?? G.garage.model) : G.garage.model;
+  const robotOnTry = shownModel !== G.garage.model;
+  for (const it of cat.items) {
+    const own = G.owns(cat.id, it.id);
+    const on = !robotOnTry && (cat.id === 'model' ? G.garage.model === it.id : G.garage.looks[shownModel][cat.id] === it.id);
+    const trying = tryOn && tryOn.cat === cat.id && tryOn.id === it.id;
+    const b = document.createElement('button');
+    b.className = (on && !trying ? 'on ' : '') + (trying ? 'preview ' : '') + (own ? '' : 'locked');
+    const key = `${cat.id}:${it.id}`;
+    const pic = ICONS[key] ? `<img src="${iconUrl(key)}" alt="">` : `<span class="sw" style="background:${hex(it.color ?? 0x2a2c52)}"></span>`;
+    const st = on ? '<span class="st on">НАДЕТО</span>' : own ? '<span class="st own">ЕСТЬ</span>' : `<span class="st">${COIN}${it.price}</span>`;
+    b.innerHTML = `<span class="pic">${pic}</span><span class="nm">${it.name}</span>${st}`;
+    b.onclick = () => {
+      sfx.click();
+      if (robotOnTry && cat.id !== 'model') {
+        // browsing colours on a robot that is not bought yet: preview only
+        tryOn = { cat: cat.id, id: it.id, model: shownModel };
+        G.applyLook(robot, tryOn, onRobotRebuilt);
+      } else if (own) {
+        // owned: equip right away
+        tryOn = null;
+        G.choose(cat.id, it.id, coins);
+        G.applyLook(robot, null, onRobotRebuilt);
+      } else {
+        // not owned: try it on first
+        tryOn = { cat: cat.id, id: it.id };
+        G.applyLook(robot, tryOn, onRobotRebuilt);
+      }
+      renderGarage();
+    };
+    $('garage-items').appendChild(b);
+  }
+  const buy = $('garage-buy');
+  buy.classList.toggle('hidden', !tryOn);
+  if (tryOn) {
+    // the robot itself is bought first when it is still on try-on
+    const it = robotOnTry ? G.item('model', shownModel) : G.item(tryOn.cat, tryOn.id);
+    const can = coins >= it.price;
+    buy.classList.toggle('poor', !can);
+    buy.innerHTML = `${can ? (robotOnTry ? `КУПИТЬ ${it.name.toUpperCase()}` : 'КУПИТЬ') : 'НЕ ХВАТАЕТ'} ${COIN}${it.price}`;
+  }
+}
+
+$('garage-buy').addEventListener('click', () => {
+  if (!tryOn) return;
+  const shown = tryOn.cat === 'model' ? tryOn.id : tryOn.model;
+  const paid = shown && shown !== G.garage.model ? G.choose('model', shown, coins) : G.choose(tryOn.cat, tryOn.id, coins);
+  if (paid < 0) { sfx.bump(); haptic('error'); toast('НЕ ХВАТАЕТ RR'); return; }
+  coins -= paid;
+  store.set('coins', coins);
+  sfx.coin();
+  haptic('success');
+  tryOn = null;
+  G.applyLook(robot, null, onRobotRebuilt);
+  hud();
+  renderGarage();
+});
+$('jetbtn').addEventListener('click', () => useJet());
 $('pausebtn').addEventListener('click', () => { if (state === 'play' && P.alive) setPause(true); });
 $('resume').addEventListener('click', () => { setPause(false); sfx.unlock(); sfx.click(); });
 $('newrun').addEventListener('click', () => { setPause(false); clearRun(); newWorld(); });
@@ -1842,8 +2440,9 @@ async function loadRobotModel() {
 let last = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
-  const dt = paused || document.hidden ? 0 : Math.min(0.05, (now - last) / 1000);
+  const dt = paused || document.hidden || state === 'mini' ? 0 : Math.min(0.05, (now - last) / 1000);
   last = now;
+  if (state === 'mini') return; // the training draws its own scene
   if (paused) {
     // frozen world, but camera and sky stay correct (e.g. right after restoring a saved run)
     updateCamera(0);
@@ -1857,6 +2456,8 @@ function frame(now) {
   checkHits();
   updateDeath(dt);
   updateParticles(dt);
+  updateStreaks(dt);
+  if (robot.acc?.userData.spin) robot.acc.userData.spin.rotation.y += Math.max(dt, 0.016) * 14;
   updateCamera(dt);
   updateWarnings();
   updateSkyCars(dt);
@@ -1867,7 +2468,7 @@ function frame(now) {
 // ?debug in the URL exposes a few helpers in the console (time of day, jumping ahead).
 if (new URLSearchParams(location.search).has('debug')) {
   window.rc = {
-    env, lanes, P, sfx,
+    env, lanes, P, sfx, robot, camera, renderer, scene,
     night: () => { env.phase = 0.65; },
     day: () => { env.phase = 0.1; },
     rain: () => { env.rainTarget = 1; env.rain = 1; },
@@ -1879,17 +2480,42 @@ if (new URLSearchParams(location.search).has('debug')) {
       robot.root.position.set(0, 0, -row);
     },
     types: () => [...lanes.values()].map((l) => `${l.row}:${l.type}`).join(' '),
+    newWorld: () => newWorld(),
+    freeCells, HALF,
   };
 }
 
+const TIPS = [
+  'Свайп в сторону — шаг вбок, вниз — шаг назад',
+  'Долго стоишь — прилетит охранный дрон',
+  'В лётном центре робот учится летать на джетпаке',
+  'Мигающая клетка скоро ударит током',
+  'Подойди к человеку с ладонью — он даст пять',
+  'Жетоны RR тратятся в гараже на новый вид робота',
+  'На переезде колокол звенит, пока поезд не проедет',
+];
+function loadStep(p, text) {
+  $('ld-fill').style.width = `${Math.round(p * 100)}%`;
+  if (text) $('ld-text').textContent = text;
+}
+
 async function init() {
+  // the loading screen always stays up for 1.5-2.5 s, so the logo and the tip can be seen
+  const shownUntil = performance.now() + 1500 + Math.random() * 1000;
+  $('ld-tip').textContent = 'Совет: ' + pick(TIPS);
+  loadStep(0.15, 'ЗАПУСК СИСТЕМ...');
   initTelegram(BG);
   // Neon signs are drawn with the pixel font, so wait for it (but never hang on it).
   try {
     await Promise.race([document.fonts.load('16px "Press Start 2P"'), new Promise((r) => setTimeout(r, 2500))]);
   } catch {}
+  loadStep(0.35, 'ЗАГРУЗКА ПРОФИЛЯ...');
   best = parseInt(await store.get('best'), 10) || 0;
   coins = parseInt(await store.get('coins'), 10) || 0;
+  await G.loadGarage();
+  loadStep(0.55, 'СТРОИМ ГОРОД...');
+  await new Promise((r) => setTimeout(r, 30)); // let the bar repaint before the heavy build
+  G.applyLook(robot, null, onRobotRebuilt);
   // the freshest saved run: local (every sidewalk) or Telegram cloud (on pause / minimize)
   const parse = (v) => { try { return JSON.parse(v || 'null'); } catch { return null; } };
   let local = null;
@@ -1897,7 +2523,14 @@ async function init() {
   const cloud = parse(await store.get('run'));
   const save = [local, cloud].filter(Boolean).sort((a, b) => (b.t ?? 0) - (a.t ?? 0))[0] ?? null;
   newWorld(save && save.row > 0 && save.seed ? save : null);
-  $('loading').classList.add('hidden');
+  loadStep(0.85, 'ВКЛЮЧАЕМ НЕОН...');
+  await new Promise((r) => setTimeout(r, Math.max(0, shownUntil - 300 - performance.now())));
+  loadStep(1, 'ГОТОВО');
+  renderer.render(scene, camera);
+  setTimeout(() => {
+    $('loading').classList.add('fade');
+    setTimeout(() => $('loading').classList.add('hidden'), 550);
+  }, 300);
   requestAnimationFrame(frame);
   loadRobotModel();
 }

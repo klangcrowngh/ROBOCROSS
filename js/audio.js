@@ -527,6 +527,7 @@ const HUMS = {
   scanner: { f: [430, 437], type: 'square', cutoff: 1800, trem: 9, vol: 0.035 },
   water: { noise: true, cutoff: 650, trem: 0.45, vol: 0.09 },
   hunter: { f: [96, 99], type: 'sawtooth', cutoff: 650, trem: 24, vol: 0.11 },
+  jet: { noise: true, cutoff: 900, trem: 16, vol: 0.16 },
 };
 function humNode(name) {
   if (!hums[name]) {
@@ -729,7 +730,10 @@ export const sfx = {
   },
   photo: () => { noise(0.04, { vol: 0.15, cutoff: 5000, type: 'highpass' }); tone(2400, 0.05, { vol: 0.015, delay: 0.05 }); },
 
-  // construction, bridges, people
+  jetStart: () => { noise(0.8, { vol: 0.3, cutoff: 300, to: 2400, type: 'bandpass', q: 0.7 }); tone(180, 0.7, { type: 'sawtooth', vol: 0.04, slide: 520 }); },
+  jetLand: () => { noise(0.25, { vol: 0.2, cutoff: 500 }); tone(140, 0.2, { type: 'sine', vol: 0.06, slide: 60 }); },
+  center: () => [0, 4, 7, 11, 14].forEach((n, i) => tone(mtof(69 + n), 0.3, { type: 'sine', vol: 0.04, delay: i * 0.09 })),
+  // construction and people
   creak: (k = 1) => { tone(rnd(70, 90), 0.5, { type: 'sawtooth', vol: 0.025 * k, slide: rnd(55, 65) }); noise(0.4, { vol: 0.02 * k, cutoff: 900, type: 'bandpass', q: 6 }); },
   beamWarn: () => tone(1250, 0.06, { vol: 0.025 }),
   beamFall: (k = 1) => tone(1800, 0.3, { type: 'sine', vol: 0.025 * k, slide: 500 }),
@@ -737,7 +741,6 @@ export const sfx = {
     [[420, 0.6], [1130, 0.4], [2290, 0.25]].forEach(([f, d]) => tone(f, d, { type: 'square', vol: 0.03 * k, slide: f * 0.97 }));
     noise(0.3, { vol: 0.2 * k, cutoff: 600 });
   },
-  bridgeMotor: (k = 1) => { tone(70, 1.0, { type: 'sawtooth', vol: 0.03 * k, slide: 95, attack: 0.1 }); tone(140, 1.0, { type: 'square', vol: 0.008 * k, slide: 190, attack: 0.1 }); },
   clap: () => {
     noise(0.05, { vol: 0.25, cutoff: 2200, type: 'bandpass', q: 1 });
     [0, 4, 7, 12].forEach((n, i) => tone(mtof(72 + n), 0.1, { vol: 0.03, delay: 0.05 + i * 0.05 }));

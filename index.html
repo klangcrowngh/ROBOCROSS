@@ -33,14 +33,43 @@
     <button id="mute" aria-label="Звук">🔊</button>
     <button id="music" aria-label="Музыка">♫</button>
     <button id="pausebtn" aria-label="Пауза">II</button>
+    <button id="jetbtn" class="hidden" aria-label="Джетпак"><span></span></button>
     <div id="toast"></div>
   </div>
 
+  <!-- main menu: the robot waits on the neon street -->
   <div id="menu" class="screen">
     <h1 class="logo"><span>ROBO</span><span class="y">CROSS</span></h1>
-    <img class="brand" src="assets/logo-white.svg" alt="RENT ROBOT">
-    <p class="hint">ТАПНИ, ЧТОБЫ БЕЖАТЬ</p>
-    <p class="sub">тап — вперёд · свайп — в любую сторону</p>
+    <div class="menu-bottom">
+      <button id="btn-garage" class="side"><i class="ico garage"></i><span>ГАРАЖ</span></button>
+      <button id="play" class="play">ИГРАТЬ</button>
+      <button id="btn-leaders" class="side"><i class="ico cup"></i><span>ЛИДЕРЫ</span></button>
+    </div>
+  </div>
+
+  <!-- garage: the robot up top, the shop below -->
+  <div id="garage" class="screen hidden">
+    <div class="g-top">
+      <button id="garage-close" class="back" aria-label="Назад"></button>
+      <span class="g-title">ГАРАЖ</span>
+      <span class="pill"><i class="coin-ico"></i><b id="garage-coins">0</b></span>
+    </div>
+    <div class="sheet shop">
+      <div id="garage-tabs" class="tabs"></div>
+      <div id="garage-items" class="items"></div>
+      <button id="garage-buy" class="buy hidden">КУПИТЬ</button>
+    </div>
+  </div>
+
+  <div id="leaders" class="screen hidden">
+    <div class="sheet tall">
+      <div class="sheet-head">
+        <span>ЛИДЕРЫ</span>
+        <button id="leaders-close" class="x" aria-label="Закрыть">✕</button>
+      </div>
+      <div id="leaders-list" class="list"></div>
+      <div id="leaders-me" class="me"></div>
+    </div>
   </div>
 
   <div id="over" class="screen hidden">
@@ -50,7 +79,9 @@
       <div class="row"><span>СЧЁТ</span><b id="final-score">0</b></div>
       <div class="row"><span>РЕКОРД</span><b id="final-best">0</b></div>
       <div id="new-best" class="new hidden">★ НОВЫЙ РЕКОРД ★</div>
+      <div id="over-board" class="board hidden"></div>
       <button id="restart">ЕЩЁ РАЗ</button>
+      <button id="tomenu" class="ghost">В МЕНЮ</button>
     </div>
   </div>
 
@@ -62,7 +93,19 @@
     </div>
   </div>
 
-  <div id="loading" class="screen">ЗАГРУЗКА...</div>
+  <div id="loading">
+    <div class="ld-grid"></div>
+    <div class="ld-center">
+      <div class="ld-ring"><img src="assets/rr.svg" alt="RR"></div>
+      <img class="ld-word" src="assets/logo-white.svg" alt="RENT ROBOT">
+      <div class="ld-title"><span>ROBO</span> <span class="y">CROSS</span></div>
+    </div>
+    <div class="ld-bottom">
+      <div class="ld-bar"><i id="ld-fill"></i></div>
+      <div id="ld-text">ЗАГРУЗКА...</div>
+      <div id="ld-tip"></div>
+    </div>
+  </div>
   </div>
 
   <script type="module" src="js/game.js"></script>
