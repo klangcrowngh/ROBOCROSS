@@ -137,7 +137,7 @@ function withRng(salt, fn) {
 function resetGen() {
   gen = {
     type: 'safe', left: 0, style: 'sidewalk', cw: 0,
-    lastViaduct: 0, lastDistrict: 0, nextCenter: 110, stations: 0,
+    lastViaduct: 0, lastDistrict: 0, nextCenter: 250, stations: 0,
     last: {}, prevHazard: null, tension: 0,
     trail: 0, trailCol: 0,
   };
@@ -146,9 +146,11 @@ function resetGen() {
   maxRow = -9;
 }
 
-const difficulty = (row) => Math.min(row / 160, 1);
-// How far the run has ramped up: 0 at the start, 1 (full density) from about row 150.
-const ramp = (row) => clamp((row - 8) / 140, 0, 1);
+// Difficulty grows smoothly over the first 1000 rows, where it reaches the full level: quickly at
+// first, then easing out (about 0.28 at row 150, 0.5 at 300, 0.75 at 500, 1 at 1000). Traffic,
+// obstacles, traps, patrols and speeds all follow this one curve.
+const difficulty = (row) => { const t = clamp(row / 1000, 0, 1); return 1 - (1 - t) * (1 - t); };
+const ramp = (row) => difficulty(Math.max(0, row - 8));
 // weights blended from an easy table to a hard one
 const rampWeights = (easy, hard, k) => Object.fromEntries(
   [...new Set([...Object.keys(easy), ...Object.keys(hard)])].map((n) => [n, (easy[n] ?? 0) * (1 - k) + (hard[n] ?? 0) * k]),
@@ -162,15 +164,15 @@ const WAIT_FOR = new Set(['road', 'hover', 'water', 'gap', 'rail', 'laser', 'sca
 const STATION_NAME = { flight: 'ЛЁТНЫЙ ЦЕНТР', shield: 'ЩИТ-ГЕНЕРАТОР' };
 
 const HAZARDS = {
-  road: { from: 4, w: () => 48, len: (r) => [1, r < 30 ? 2 : r < 80 ? 3 : 4], cool: 0, tension: 1 },
-  water: { from: 8, w: () => 15, len: (r) => [1, r < 30 ? 2 : 3], cool: 4, tension: 1 },
-  gap: { from: 20, w: () => 8, len: (r) => [1, r < 60 ? 2 : 3], cool: 10, tension: 1.2 },
+  road: { from: 4, w: () => 48, len: (r) => [1, r < 100 ? 2 : r < 400 ? 3 : 4], cool: 0, tension: 1 },
+  water: { from: 8, w: () => 15, len: (r) => [1, r < 150 ? 2 : 3], cool: 4, tension: 1 },
+  gap: { from: 20, w: () => 8, len: (r) => [1, r < 300 ? 2 : 3], cool: 10, tension: 1.2 },
   rail: { from: 14, w: () => 14, len: () => [1, 1], cool: 10, tension: 1.5 },
   hover: { from: 20, w: () => 16, len: () => [1, 2], cool: 4, tension: 1.3 },
-  laser: { from: 26, w: (r) => Math.min(8, 3 + r / 30), len: () => [1, 1], cool: 9, tension: 2 },
-  scan: { from: 42, w: (r) => Math.min(7, 2 + r / 40), len: () => [1, 1], cool: 11, tension: 2 },
-  build: { from: 30, w: (r) => Math.min(8, 3 + r / 28), len: () => [1, 1], cool: 9, tension: 1.8 },
-  patrol: { from: 20, w: (r) => Math.min(11, 5 + r / 28), len: () => [1, 1], cool: 6, tension: 1.6 },
+  laser: { from: 26, w: (r) => 3 + 5 * difficulty(r), len: () => [1, 1], cool: 9, tension: 2 },
+  scan: { from: 42, w: (r) => 2 + 5 * difficulty(r), len: () => [1, 1], cool: 11, tension: 2 },
+  build: { from: 30, w: (r) => 3 + 5 * difficulty(r), len: () => [1, 1], cool: 9, tension: 1.8 },
+  patrol: { from: 20, w: (r) => 5 + 6 * difficulty(r), len: () => [1, 1], cool: 6, tension: 1.6 },
 };
 // Each district leans towards its own kind of trouble.
 const DISTRICT_BIAS = {
@@ -253,7 +255,7 @@ function planOne() {
     // ability stations: the flight center first, then the shield generator, taking turns
     const center = type === 'safe' && !gate && gen.style !== 'park' && planRow >= gen.nextCenter
       ? STATION_ORDER[gen.stations++ % STATION_ORDER.length] : null;
-    if (center) gen.nextCenter = planRow + 120;
+    if (center) gen.nextCenter = planRow + 250; // flight ~250, shield ~500, then taking turns
     const viaduct = type === 'safe' && !gate && !center && planRow - gen.lastViaduct > 22;
     if (viaduct) gen.lastViaduct = planRow;
     // coin trail through breather zones, wandering one column at a time
