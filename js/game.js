@@ -460,7 +460,7 @@ function buildSafe(lane) {
     const n = row <= 3 ? 1
       : bp ? (crossAlley ? randInt(0, 1) : weighted({ 0: 10, 1: 50, 2: 40 }) | 0)
       : park ? weighted({ 0: 26, 1: 52, 2: 22 }) | 0
-      : weighted({ 0: 33, 1: 49, 2: 18 }) | 0;
+      : weighted({ 0: 28, 1: 50, 2: 22 }) | 0;
     // spread obstacles out: not next to each other, not stacked on the ones in the row below
     const below = lanes.get(row - 1)?.blocked ?? new Set();
     const nearBelow = (x) => below.has(x - 1) || below.has(x) || below.has(x + 1);
@@ -627,10 +627,17 @@ function buildSafe(lane) {
         const kind = !park && r < 0.25 ? 'courier' : r < 0.3 ? 'fan' : null;
         if (!lane.blocked.has(Math.round(x)) && !NPC.personAt(lane, x)) NPC.spawnPerson(lane, x, 'walk', 0, kind);
       }
+      // white delivery rovers rolling along sidewalks and plazas: about one in five
+      if (!park && row >= 4 && Math.random() < 0.2) {
+        const x = rand(-HALF - 3, HALF + 3);
+        if (!lane.blocked.has(Math.round(x)) && !NPC.personAt(lane, x)) NPC.spawnPerson(lane, x, 'walk', 0, 'courier');
+      }
     }
   }
-  // Robotic lawn mower trimming a big park.
-  if (bp && bp.idx === Math.floor(bp.len / 2) && lane.blocked.size <= 1 && Math.random() < 0.45) {
+  // Robotic lawn mowers trimming the grass: in the inner rows of big parks, now and then in
+  // small ones (never on the first or last row of a park, the robot enters and leaves there)
+  const mowerRow = bp ? bp.idx > 0 && bp.idx < bp.len - 1 && Math.random() < 0.35 : park && row > 10 && Math.random() < 0.12;
+  if (mowerRow && lane.blocked.size <= 2) {
     const mesh = M.makeMower();
     group.add(mesh);
     lane.patrol = { mesh, x: rand(-HALF, HALF), dir: Math.random() < 0.5 ? 1 : -1, speed: rand(0.8, 1.2), beep: 0, mower: true };
@@ -688,16 +695,22 @@ function buildRoad(lane) {
   M.bake(group);
 
   const d = difficulty(lane.row);
-  lane.speed = (hover ? rand(3.8, 5.5) : rand(1.5, 3.0)) * (1 + d * 0.8);
+  // speeds grow gently with the distance and never go past a cap (cells per second)
+  const [lo, hi] = hover ? [2.6, 6.2] : [1.2, 4.2];
+  lane.speed = Math.min(hi, (hover ? rand(3.2, 4.6) * (1 + d * 0.35) : rand(1.5, 2.8) * (1 + d * 0.45)));
   // Several lanes side by side: a lane going the same way as the one below must be clearly
   // faster or slower, otherwise a wall of cars could keep its shape and never open up.
+  // When faster would break the cap it goes slower instead.
   const nb = prev && (prev.type === 'road' || prev.type === 'hover') ? prev : null;
   if (nb && nb.dir === lane.dir) {
     const r = lane.speed / nb.speed;
-    if (r > 0.75 && r < 1.33) lane.speed = nb.speed * (Math.random() < 0.5 ? 0.7 : 1.4);
+    if (r > 0.75 && r < 1.33) lane.speed = nb.speed * (Math.random() < 0.5 && nb.speed * 1.4 <= hi ? 1.4 : 0.7);
+    lane.speed = Math.max(lo, Math.min(hi, lane.speed));
   }
-  const multi = lane.prevType === 'road' || lane.prevType === 'hover' || lane.nextType === 'road' || lane.nextType === 'hover';
-  const count = hover ? randInt(1, 2) : lane.row < 12 ? randInt(1, 2) : multi ? weighted({ 1: 30, 2: 52, 3: 18 }) | 0 : randInt(1, 3);
+  // dense enough that running straight ahead without looking gets the robot hit
+  const count = hover ? randInt(2, 3) : lane.row < 12 ? randInt(2, 3)
+    : lane.row < 30 ? weighted({ 2: 40, 3: 45, 4: 15 }) | 0
+    : weighted({ 2: 20, 3: 50, 4: 30 }) | 0;
   const list = [];
   for (let i = 0; i < count; i++) {
     const mesh = M.makeVehicle(weighted(hover ? HOVER_KINDS : ROAD_KINDS));
