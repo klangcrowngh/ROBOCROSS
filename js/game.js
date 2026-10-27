@@ -156,15 +156,15 @@ const WAIT_FOR = new Set(['road', 'hover', 'water', 'gap', 'rail', 'laser', 'sca
 const STATION_NAME = { flight: 'ЛЁТНЫЙ ЦЕНТР', shield: 'ЩИТ-ГЕНЕРАТОР' };
 
 const HAZARDS = {
-  road: { from: 4, w: () => 48, len: (r) => [1, r < 30 ? 2 : 3], cool: 0, tension: 1 },
+  road: { from: 4, w: () => 48, len: (r) => [1, r < 30 ? 2 : r < 80 ? 3 : 4], cool: 0, tension: 1 },
   water: { from: 8, w: () => 15, len: (r) => [1, r < 30 ? 2 : 3], cool: 4, tension: 1 },
   gap: { from: 20, w: () => 8, len: (r) => [1, r < 60 ? 2 : 3], cool: 10, tension: 1.2 },
   rail: { from: 14, w: () => 14, len: () => [1, 1], cool: 10, tension: 1.5 },
   hover: { from: 20, w: () => 16, len: () => [1, 2], cool: 4, tension: 1.3 },
-  laser: { from: 28, w: (r) => Math.min(7, 3 + r / 35), len: () => [1, 1], cool: 10, tension: 2 },
-  scan: { from: 45, w: (r) => Math.min(6, 2 + r / 45), len: () => [1, 1], cool: 12, tension: 2 },
-  build: { from: 32, w: (r) => Math.min(7, 3 + r / 30), len: () => [1, 1], cool: 10, tension: 1.8 },
-  patrol: { from: 22, w: (r) => Math.min(10, 5 + r / 30), len: () => [1, 1], cool: 6, tension: 1.6 },
+  laser: { from: 26, w: (r) => Math.min(8, 3 + r / 30), len: () => [1, 1], cool: 9, tension: 2 },
+  scan: { from: 42, w: (r) => Math.min(7, 2 + r / 40), len: () => [1, 1], cool: 11, tension: 2 },
+  build: { from: 30, w: (r) => Math.min(8, 3 + r / 28), len: () => [1, 1], cool: 9, tension: 1.8 },
+  patrol: { from: 20, w: (r) => Math.min(11, 5 + r / 28), len: () => [1, 1], cool: 6, tension: 1.6 },
 };
 // Each district leans towards its own kind of trouble.
 const DISTRICT_BIAS = {
@@ -458,9 +458,9 @@ function buildSafe(lane) {
     const crossAlley = bp && bp.idx % 3 === 2;
     // obstacle budget per row: open enough to breathe, ground details fill the rest
     const n = row <= 3 ? 1
-      : bp ? (crossAlley ? randInt(0, 1) : weighted({ 0: 12, 1: 52, 2: 36 }) | 0)
-      : park ? weighted({ 0: 30, 1: 52, 2: 18 }) | 0
-      : weighted({ 0: 38, 1: 47, 2: 15 }) | 0;
+      : bp ? (crossAlley ? randInt(0, 1) : weighted({ 0: 10, 1: 50, 2: 40 }) | 0)
+      : park ? weighted({ 0: 26, 1: 52, 2: 22 }) | 0
+      : weighted({ 0: 33, 1: 49, 2: 18 }) | 0;
     // spread obstacles out: not next to each other, not stacked on the ones in the row below
     const below = lanes.get(row - 1)?.blocked ?? new Set();
     const nearBelow = (x) => below.has(x - 1) || below.has(x) || below.has(x + 1);
@@ -688,7 +688,7 @@ function buildRoad(lane) {
   M.bake(group);
 
   const d = difficulty(lane.row);
-  lane.speed = (hover ? rand(3.6, 5.2) : rand(1.4, 2.8)) * (1 + d * 0.8);
+  lane.speed = (hover ? rand(3.8, 5.5) : rand(1.5, 3.0)) * (1 + d * 0.8);
   // Several lanes side by side: a lane going the same way as the one below must be clearly
   // faster or slower, otherwise a wall of cars could keep its shape and never open up.
   const nb = prev && (prev.type === 'road' || prev.type === 'hover') ? prev : null;
@@ -697,7 +697,7 @@ function buildRoad(lane) {
     if (r > 0.75 && r < 1.33) lane.speed = nb.speed * (Math.random() < 0.5 ? 0.7 : 1.4);
   }
   const multi = lane.prevType === 'road' || lane.prevType === 'hover' || lane.nextType === 'road' || lane.nextType === 'hover';
-  const count = hover ? randInt(1, 2) : lane.row < 12 ? randInt(1, 2) : multi ? weighted({ 1: 35, 2: 50, 3: 15 }) | 0 : randInt(1, 3);
+  const count = hover ? randInt(1, 2) : lane.row < 12 ? randInt(1, 2) : multi ? weighted({ 1: 30, 2: 52, 3: 18 }) | 0 : randInt(1, 3);
   const list = [];
   for (let i = 0; i < count; i++) {
     const mesh = M.makeVehicle(weighted(hover ? HOVER_KINDS : ROAD_KINDS));
