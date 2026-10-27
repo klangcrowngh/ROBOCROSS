@@ -26,6 +26,9 @@ export function onAppHidden(cb) {
   } catch {}
 }
 
+// numeric Telegram id of the player (null outside Telegram)
+export const userId = () => tg?.initDataUnsafe?.user?.id ?? null;
+
 export function haptic(kind) {
   if (!supports('6.1')) return;
   const h = tg.HapticFeedback;

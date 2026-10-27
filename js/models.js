@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as TX from './textures.js';
+import { bake as bakeParts } from './gear.js';
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
@@ -167,6 +168,15 @@ function buildRobot(model, colors, kind) {
     dot: new THREE.MeshBasicMaterial({ color: kind === 'titan' ? 0xff3a3a : 0xe8893a }),
   };
   const r = ({ titan: buildTitan, dog: buildDog }[kind] ?? buildRR)(model, mats);
+  // the static boxes of each limb are merged per material (a robot is ~100 boxes); the eyes
+  // blink, so they stay apart. Only the new body is merged, not what else hangs on the model.
+  for (const e of r.eyes) e.userData.keep = true;
+  const fresh = model.children.filter((o) => !before.has(o));
+  const tmp = new THREE.Group();
+  for (const o of fresh) if (o.isMesh) tmp.add(o);
+  bakeParts(tmp);
+  for (const o of [...tmp.children]) model.add(o);
+  for (const o of fresh) if (!o.isMesh) bakeParts(o);
   return { ...r, mats, parts: model.children.filter((o) => !before.has(o)) };
 }
 
@@ -1741,19 +1751,37 @@ export function stationHolo(kind) {
 }
 
 export function makeJetpack() {
+  // a back plate with straps, two tanks with domed caps and accent rings, a glowing core and
+  // flared nozzles; the flames are cones that the game flickers
   const g = new THREE.Group();
-  box(g, 0.22, 0.26, 0.09, 0x3a3d55, 0, 0, 0);
-  box(g, 0.24, 0.04, 0.1, 0x35e6ff, 0, 0.1, 0, true);
+  const lit = (c) => new THREE.MeshLambertMaterial({ color: c });
+  const glow = (c, o = 1) => new THREE.MeshBasicMaterial({ color: c, transparent: o < 1, opacity: o, depthWrite: o >= 1 });
+  const add = (geo, m, x, y, z, rx = 0) => { const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); o.rotation.x = rx; o.castShadow = !m.isMeshBasicMaterial; g.add(o); return o; };
+  const plate = lit(0x2e3148), tank = lit(0xdfe3ee), ring = lit(0xd6a124), metal = lit(0x8a90a8), dark = lit(0x1a1b24);
+  add(new THREE.BoxGeometry(0.2, 0.28, 0.04), plate, 0, 0, -0.01);
+  for (const s of [-1, 1]) add(new THREE.BoxGeometry(0.035, 0.3, 0.02), dark, s * 0.07, 0.0, -0.035);
   const flames = [];
   for (const s of [-1, 1]) {
-    box(g, 0.08, 0.14, 0.08, 0xd6a124, s * 0.07, -0.16, 0.02);
-    const f = box(g, 0.07, 0.22, 0.07, 0xffa21a, s * 0.07, -0.34, 0.02, true);
-    const core = box(g, 0.04, 0.16, 0.04, 0xfff1a8, s * 0.07, -0.3, 0.02, true);
+    const x = s * 0.075;
+    add(new THREE.CylinderGeometry(0.058, 0.058, 0.24, 16), tank, x, 0.0, 0.05);
+    add(new THREE.SphereGeometry(0.058, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), tank, x, 0.12, 0.05);
+    for (const y of [0.07, -0.07]) add(new THREE.CylinderGeometry(0.06, 0.06, 0.022, 16), ring, x, y, 0.05);
+    add(new THREE.CylinderGeometry(0.012, 0.012, 0.03, 8), metal, x, 0.185, 0.05);
+    add(new THREE.CylinderGeometry(0.05, 0.04, 0.03, 14), metal, x, -0.135, 0.05);
+    add(new THREE.CylinderGeometry(0.036, 0.05, 0.06, 14), dark, x, -0.18, 0.05);
+    add(new THREE.CylinderGeometry(0.03, 0.03, 0.004, 12), glow(0xffa21a), x, -0.211, 0.05);
+    const f = add(new THREE.CylinderGeometry(0.045, 0, 0.28, 12), glow(0xffa21a, 0.9), x, -0.35, 0.05);
+    const core = add(new THREE.CylinderGeometry(0.024, 0, 0.2, 10), glow(0xfff1a8), x, -0.31, 0.05);
     f.visible = core.visible = false;
     flames.push(f, core);
   }
+  // glowing core between the tanks, with a status light
+  add(new THREE.BoxGeometry(0.05, 0.16, 0.05), dark, 0, 0.0, 0.06);
+  add(new THREE.BoxGeometry(0.03, 0.12, 0.012), glow(0x35e6ff), 0, 0.0, 0.088);
+  add(new THREE.BoxGeometry(0.02, 0.02, 0.012), glow(0xff3a5a), 0, 0.095, 0.088);
   g.userData.flames = flames;
-  return g;
+  for (const f of flames) f.userData.keep = true;
+  return bakeParts(g);
 }
 
 // Sky obstacles for jetpack flights. Every one gets a pulsing red danger aura and a blinking

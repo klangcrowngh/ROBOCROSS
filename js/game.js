@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as M from './models.js';
 import * as TX from './textures.js';
-import { initTelegram, haptic, store, onAppHidden } from './telegram.js';
+import { initTelegram, haptic, store, onAppHidden, userId } from './telegram.js';
 import { sfx, isMuted, setMuted, isMusicOn, setMusic, setAudioPaused } from './audio.js';
 import { Environment, DISTRICTS, districtAt, districtIndex } from './env.js';
 import * as NPC from './npc.js';
@@ -61,10 +61,18 @@ const isRoad = (t) => t === 'road' || t === 'hover';
 const isFloat = (t) => t === 'gap' || t === 'water'; // lanes crossed on moving platforms
 
 // ---------------------------------------------------------------- renderer / scene
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// Phones render fewer pixels and a smaller shadow map (they heat up otherwise); the pixel ratio
+// also follows the frame time, see adaptQuality(). The loop itself runs at the screen's own
+// refresh rate (60, 90, 120 Hz): everything moves by real time.
+const MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && matchMedia('(pointer: coarse)').matches);
+const DPR_MAX = Math.min(window.devicePixelRatio, MOBILE ? 1.5 : 2);
+const DPR_MIN = Math.min(DPR_MAX, MOBILE ? 0.9 : 1);
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: MOBILE ? 'default' : 'high-performance' });
+renderer.setPixelRatio(DPR_MAX);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
+// shadows are redrawn at most 60 times a second (every other frame on a 120 Hz screen)
+renderer.shadowMap.autoUpdate = false;
 $('game').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -74,7 +82,7 @@ const hemi = new THREE.HemisphereLight(0xe4e8ff, 0x46307a, 1.7);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff6ea, 1.9);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.setScalar(MOBILE ? 1024 : 2048);
 Object.assign(sun.shadow.camera, { left: -20, right: 20, top: 20, bottom: -20, near: 1, far: 80 });
 sun.shadow.bias = -0.001;
 sun.shadow.normalBias = 0.02;
@@ -146,10 +154,11 @@ function resetGen() {
   maxRow = -9;
 }
 
-// Difficulty grows smoothly over the first 1000 rows, where it reaches the full level: quickly at
-// first, then easing out (about 0.28 at row 150, 0.5 at 300, 0.75 at 500, 1 at 1000). Traffic,
+// Difficulty grows smoothly over the first MAX_ROW rows, where it reaches the full level: quickly at
+// first, then easing out (about 0.4 at row 150, 0.7 at 300, 0.94 at 500, 1 at 675). Traffic,
 // obstacles, traps, patrols and speeds all follow this one curve.
-const difficulty = (row) => { const t = clamp(row / 1000, 0, 1); return 1 - (1 - t) * (1 - t); };
+const MAX_ROW = 675;
+const difficulty = (row) => { const t = clamp(row / MAX_ROW, 0, 1); return 1 - (1 - t) * (1 - t); };
 const ramp = (row) => difficulty(Math.max(0, row - 8));
 // weights blended from an easy table to a hard one
 const rampWeights = (easy, hard, k) => Object.fromEntries(
@@ -164,9 +173,9 @@ const WAIT_FOR = new Set(['road', 'hover', 'water', 'gap', 'rail', 'laser', 'sca
 const STATION_NAME = { flight: 'ЛЁТНЫЙ ЦЕНТР', shield: 'ЩИТ-ГЕНЕРАТОР' };
 
 const HAZARDS = {
-  road: { from: 4, w: () => 48, len: (r) => [1, r < 100 ? 2 : r < 400 ? 3 : 4], cool: 0, tension: 1 },
-  water: { from: 8, w: () => 15, len: (r) => [1, r < 150 ? 2 : 3], cool: 4, tension: 1 },
-  gap: { from: 20, w: () => 8, len: (r) => [1, r < 300 ? 2 : 3], cool: 10, tension: 1.2 },
+  road: { from: 4, w: () => 48, len: (r) => [1, r < 70 ? 2 : r < 270 ? 3 : 4], cool: 0, tension: 1 },
+  water: { from: 8, w: () => 15, len: (r) => [1, r < 100 ? 2 : 3], cool: 4, tension: 1 },
+  gap: { from: 20, w: () => 8, len: (r) => [1, r < 200 ? 2 : 3], cool: 10, tension: 1.2 },
   rail: { from: 14, w: () => 14, len: () => [1, 1], cool: 10, tension: 1.5 },
   hover: { from: 20, w: () => 16, len: () => [1, 2], cool: 4, tension: 1.3 },
   laser: { from: 26, w: (r) => 3 + 5 * difficulty(r), len: () => [1, 1], cool: 9, tension: 2 },
@@ -1591,7 +1600,7 @@ function idlePose(dt) {
   const riding = !!P.plat;
   robot.model.rotation.x = 0;
   robot.model.rotation.z = riding ? Math.sin(time * 2.2) * 0.06 : 0;
-  for (const l of [lL, lR]) if (l?.userData.knee) l.userData.knee.rotation.x *= 0.6; // knees settle
+  for (const l of [lL, lR]) if (l?.userData.knee) l.userData.knee.rotation.x *= Math.pow(0.6, dt * 60); // knees settle
   if (lL) { lL.rotation.set(0, 0, 0); }
   if (lR) { lR.rotation.set(idle > 2.5 ? Math.max(0, Math.sin(time * 9)) * -0.25 : 0, 0, 0); }
   const out = riding ? 0.55 + Math.sin(time * 2.2) * 0.12 : 0.04 + breathe * 0.03;
@@ -1720,7 +1729,7 @@ function attachThrusters() {
     // the dog has a thruster under each paw
     for (const leg of [...robot.arms, ...robot.legs]) {
       for (const [w, c, h] of [[0.09, 0xffa21a, 0.22], [0.045, 0xfff1a8, 0.16]]) {
-        const f = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), new THREE.MeshBasicMaterial({ color: c }));
+        const f = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.6, 0, h, 10), new THREE.MeshBasicMaterial({ color: c }));
         f.position.set(0, -0.06 - h / 2, 0);
         f.visible = false;
         leg.userData.foot.add(f);
@@ -1731,7 +1740,7 @@ function attachThrusters() {
   }
   for (const arm of robot.arms) {
     for (const [w, c, y] of [[0.09, 0x9ff3ff, -0.56], [0.05, 0xffffff, -0.54]]) {
-      const f = new THREE.Mesh(new THREE.BoxGeometry(w, 0.22, w), new THREE.MeshBasicMaterial({ color: c }));
+      const f = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.6, 0, 0.22, 10), new THREE.MeshBasicMaterial({ color: c }));
       f.position.set(arm.position.x > 0 ? 0.035 : -0.035, y, 0);
       f.visible = false;
       arm.add(f);
@@ -1741,7 +1750,7 @@ function attachThrusters() {
   for (const leg of robot.legs) {
     const knee = leg.userData.knee;
     for (const [w, c, y] of [[0.1, 0xffa21a, -0.58], [0.05, 0xfff1a8, -0.55]]) {
-      const f = new THREE.Mesh(new THREE.BoxGeometry(w, 0.24, w), new THREE.MeshBasicMaterial({ color: c }));
+      const f = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.6, 0, 0.24, 10), new THREE.MeshBasicMaterial({ color: c }));
       f.position.set(0, y, 0);
       f.visible = false;
       knee.add(f);
@@ -1760,8 +1769,14 @@ function onRobotRebuilt() {
 // a back item (backpack, battery, ...) pushes the jetpack outwards so they do not overlap
 function placeJetpack() {
   const depth = robot.backDepth ?? 0;
-  if (robot.kind === 'dog') jetPack.position.set(0, 0.84 + depth, 0.08);
-  else jetPack.position.set(0, 0.95, 0.17 + depth);
+  // the dog carries it lying along the spine, nozzles pointing back and a little down
+  if (robot.kind === 'dog') {
+    jetPack.position.set(0, 0.75 + depth, 0.1);
+    jetPack.rotation.set(-Math.PI / 2 + 0.3, 0, 0);
+  } else {
+    jetPack.position.set(0, 0.95, 0.17 + depth);
+    jetPack.rotation.set(0, 0, 0);
+  }
 }
 
 // Ability buttons stack in a column at the bottom right; each ring fills as it recharges.
@@ -2598,9 +2613,15 @@ function robotThumb(kind, preview = null, focus = 'body') {
   sc.add(key, r.root);
   r.root.updateMatrixWorld(true);
   // three-quarter view from the front left (the dog more from the side), framed by its bounds
-  const box = new THREE.Box3().setFromObject(focus === 'head' ? r.head : r.root);
+  // hand and back items: framed on the items themselves (with a bit of the robot around them)
+  const close = (focus === 'items' || focus === 'back') && r.items?.length;
+  const box = new THREE.Box3();
+  // (light beams and glows are left out so they do not pull the frame away)
+  if (close) for (const o of r.items) o.traverse((m) => { if (m.isMesh && m.material.blending !== THREE.AdditiveBlending) box.expandByObject(m); });
+  else box.setFromObject(focus === 'head' ? r.head : r.root);
   const c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
-  const half = focus === 'head' ? Math.max(size.x, size.y, size.z) * 0.8
+  const half = close ? Math.max(0.3, Math.max(size.x, size.y, size.z) * 0.62)
+    : focus === 'head' ? Math.max(size.x, size.y, size.z) * 0.8
     : kind === 'dog' ? Math.max(size.y, size.z) * 0.6 : size.y * 0.54;
   const cam = new THREE.OrthographicCamera(-half * 1.25, half * 1.25, half, -half, 0.1, 20);
   const dir = focus === 'back' ? (kind === 'dog' ? new THREE.Vector3(-1, 1.1, 0.7) : new THREE.Vector3(-0.7, 0.35, 1))
@@ -2617,6 +2638,39 @@ function robotThumb(kind, preview = null, focus = 'body') {
 const iconUrl = (key) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14" shape-rendering="crispEdges">${ICONS[key]}</svg>`)}`;
 const hex = (c) => `#${c.toString(16).padStart(6, '0')}`;
 const COIN = '<i class="coin-ico"></i>';
+
+// Test coins for the owner's account only: hold the coin counter in the garage for 1.5 s.
+// Only a salted hash of the owner's Telegram id is kept here, not the id itself.
+const OWNER_HASH = '6e2d5642e330aba82b395fd5de1da1e76c6d2aa4a623b79b8c22a0da55afee3a';
+let isOwner = false;
+(async () => {
+  try {
+    const id = userId();
+    if (id == null || !crypto.subtle) return;
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`robocross:${id}`));
+    isOwner = [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('') === OWNER_HASH;
+  } catch {}
+})();
+{
+  let hold = 0;
+  const pill = $('garage-coins').closest('.pill');
+  pill.style.pointerEvents = 'auto';
+  pill.addEventListener('pointerdown', () => {
+    if (!isOwner) return;
+    clearTimeout(hold);
+    hold = setTimeout(() => {
+      coins += 4000;
+      store.set('coins', coins);
+      sfx.coin();
+      haptic('success');
+      hud();
+      renderGarage();
+      toast('+4000 RR (тест)');
+    }, 1500);
+  });
+  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) pill.addEventListener(ev, () => clearTimeout(hold));
+  pill.addEventListener('contextmenu', (e) => e.preventDefault());
+}
 
 function renderGarage() {
   $('garage-coins').textContent = coins;
@@ -2653,8 +2707,8 @@ function renderGarage() {
     // robots, schemes and wearables are shown as 3D renders of the robot on screen
     const pic = cat.id === 'model' ? `<img class="thumb" src="${robotThumb(it.id)}" alt="">`
       : cat.id === 'scheme' ? `<img class="thumb" src="${robotThumb(shownModel, with_(it.id))}" alt="">`
-      : cat.id === 'acc' ? `<img class="thumb" src="${robotThumb(shownModel, with_(it.id), it.only ? 'body' : 'head')}" alt="">`
-      : cat.id === 'arms' ? `<img class="thumb" src="${robotThumb(shownModel, with_(it.id))}" alt="">`
+      : cat.id === 'acc' ? `<img class="thumb" src="${robotThumb(shownModel, with_(it.id), it.only && it.id !== 'bone' ? 'items' : 'head')}" alt="">`
+      : cat.id === 'arms' ? `<img class="thumb" src="${robotThumb(shownModel, with_(it.id), 'items')}" alt="">`
       : cat.id === 'back' ? `<img class="thumb" src="${robotThumb(shownModel, with_(it.id), 'back')}" alt="">`
       : ICONS[key] ? `<img src="${iconUrl(key)}" alt="">` : `<span class="sw" style="background:${it.id === 'rainbow' ? 'linear-gradient(135deg,#ff3a5a,#ffe100,#30d860,#2a8bff,#a04dff)' : hex(it.color ?? 0x2a2c52)}"></span>`;
     const st = on ? '<span class="st on">НАДЕТО</span>' : own ? '<span class="st own">ЕСТЬ</span>' : `<span class="st">${COIN}${it.price}</span>`;
@@ -2777,18 +2831,44 @@ async function loadRobotModel() {
 
 // ---------------------------------------------------------------- loop
 let last = performance.now();
+let shadowWait = 0, pausedDrawn = 0;
+// Adaptive resolution: the shortest frame seen is taken as the screen's refresh interval; when
+// frames keep coming late the pixel ratio steps down, when there is plenty of headroom it
+// slowly climbs back.
+const Q = { avg: 16.7, vsync: 16.7, slow: 0, fast: 0, dpr: DPR_MAX };
+function adaptQuality(ms) {
+  if (ms > 250) return; // a hitch or a background tab says nothing about the load
+  Q.avg += (ms - Q.avg) * 0.05;
+  Q.vsync = Math.min(Q.vsync + 0.002, Math.max(4, ms)); // drifts up slowly if the rate drops
+  if (Q.avg > Q.vsync * 1.3) { Q.slow += ms; Q.fast = 0; } else if (Q.avg < Q.vsync * 1.08) { Q.fast += ms; Q.slow = 0; }
+  let next = Q.dpr;
+  if (Q.slow > 1500) { next = Math.max(DPR_MIN, Q.dpr - 0.15); Q.slow = 0; }
+  if (Q.fast > 8000) { next = Math.min(DPR_MAX, Q.dpr + 0.1); Q.fast = 0; }
+  if (next !== Q.dpr) {
+    Q.dpr = next;
+    renderer.setPixelRatio(next);
+    resize();
+  }
+}
+
 function frame(now) {
   requestAnimationFrame(frame);
-  const dt = paused || document.hidden || state === 'mini' ? 0 : Math.min(0.05, (now - last) / 1000);
+  const raw = now - last;
+  const dt = paused || document.hidden || state === 'mini' ? 0 : Math.min(0.05, raw / 1000);
   last = now;
   if (state === 'mini') return; // the training draws its own scene
   if (paused) {
-    // frozen world, but camera and sky stay correct (e.g. right after restoring a saved run)
+    // frozen world, but camera and sky stay correct (e.g. right after restoring a saved run);
+    // a few redraws a second are enough for a still picture
+    if (now - pausedDrawn < 250) return;
+    pausedDrawn = now;
     updateCamera(0);
     env.update(0, camera.position, robot.root.position);
+    renderer.shadowMap.needsUpdate = true;
     renderer.render(scene, camera);
     return;
   }
+  adaptQuality(raw);
   time += dt;
   updateLanes(dt);
   updatePlayer(dt);
@@ -2804,6 +2884,8 @@ function frame(now) {
   updateWarnings();
   updateSkyCars(dt);
   env.update(dt, camera.position, robot.root.position);
+  shadowWait -= dt;
+  if (shadowWait <= 0) { renderer.shadowMap.needsUpdate = true; shadowWait = 1 / 64; }
   renderer.render(scene, camera);
 }
 
@@ -2823,7 +2905,9 @@ if (new URLSearchParams(location.search).has('debug')) {
     },
     types: () => [...lanes.values()].map((l) => `${l.row}:${l.type}`).join(' '),
     newWorld: () => newWorld(),
-    freeCells, HALF,
+    freeCells, HALF, thumb: (...a) => robotThumb(...a), G,
+    look: (p) => G.applyLook(robot, p, onRobotRebuilt),
+    fly: () => { P.jet = { charge: 1 }; jetPack.visible = true; useJet(); },
   };
 }
 
@@ -2868,6 +2952,7 @@ async function init() {
   loadStep(0.85, 'ВКЛЮЧАЕМ НЕОН...');
   await new Promise((r) => setTimeout(r, Math.max(0, shownUntil - 300 - performance.now())));
   loadStep(1, 'ГОТОВО');
+  renderer.shadowMap.needsUpdate = true;
   renderer.render(scene, camera);
   setTimeout(() => {
     $('loading').classList.add('fade');
