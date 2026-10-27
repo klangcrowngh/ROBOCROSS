@@ -131,7 +131,9 @@ export function disposeBaked(group) {
 export const PAL = { white: 0xd9dce4, light: 0xbfc3cf, dark: 0x2a2b33, black: 0x1a1b21, yellow: 0xd6a124 };
 
 // Second robot "Titan": slimmer silver body, dark visor with glowing eyes, red core in the chest.
-const PAL_TITAN = { white: 0xc8ccd6, light: 0x8e93a3, dark: 0x34363f, black: 0x1c1d24, yellow: 0xe0202c };
+const PAL_TITAN = { white: 0xd2d5de, light: 0x8e93a3, dark: 0x3a3c46, black: 0x1a1b22, yellow: 0xe8202c };
+// Third robot "Dog": a four-legged patrol robot, light body with a dark spine stripe.
+const PAL_DOG = { white: 0xd4d7e2, light: 0x9a9eae, dark: 0x3a3c48, black: 0x1c1d24, yellow: 0xff3a3a };
 
 export function makeRobot(colors = {}, kind = 'rr') {
   const root = new THREE.Group();  // position + facing (game controlled)
@@ -153,7 +155,7 @@ export function rebuildRobot(robot, kind) {
 
 function buildRobot(model, colors, kind) {
   const before = new Set(model.children);
-  const C = { ...(kind === 'titan' ? PAL_TITAN : PAL), ...colors };
+  const C = { ...(kind === 'titan' ? PAL_TITAN : kind === 'dog' ? PAL_DOG : PAL), ...colors };
   const mats = {
     body: new THREE.MeshLambertMaterial({ color: C.white }),
     shade: new THREE.MeshLambertMaterial({ color: C.light }),
@@ -163,7 +165,7 @@ function buildRobot(model, colors, kind) {
     eyes: new THREE.MeshBasicMaterial({ color: 0xf4f6ff }),
     dot: new THREE.MeshBasicMaterial({ color: kind === 'titan' ? 0xff3a3a : 0xe8893a }),
   };
-  const r = (kind === 'titan' ? buildTitan : buildRR)(model, mats);
+  const r = ({ titan: buildTitan, dog: buildDog }[kind] ?? buildRR)(model, mats);
   return { ...r, mats, parts: model.children.filter((o) => !before.has(o)) };
 }
 
@@ -238,81 +240,205 @@ function buildRR(model, mats) {
   return { legs, arms, head, eyes };
 }
 
+// A leg of the dog: pivot (animated) -> fixed tilt -> thigh, knee pivot (animated) -> fixed bend
+// -> shin, ankle and a black foot. As on the reference sheet every knee points backwards and the
+// shin runs forward to the foot. `thigh`/`shin` are lengths, `a`/`b` their angles from vertical.
+function dogLeg(model, mats, x, z, thigh, a, shin, b) {
+  const W = mats.body, L = mats.shade, D = mats.dark, B = mats.black;
+  const hip = new THREE.Group();
+  hip.position.set(x, 0.56, z);
+  model.add(hip);
+  const tilt = new THREE.Group();
+  tilt.rotation.x = -a;                                           // thigh down and back
+  hip.add(tilt);
+  box(tilt, 0.1, thigh, 0.115, W, 0, -thigh / 2, 0);
+  box(tilt, 0.102, 0.03, 0.117, L, 0, -thigh * 0.3, 0);
+  const knee = new THREE.Group();
+  knee.position.y = -thigh;
+  tilt.add(knee);
+  const bend = new THREE.Group();
+  bend.rotation.x = a + b;                                        // shin down and forward
+  knee.add(bend);
+  box(bend, 0.12, 0.11, 0.12, D, 0, 0, 0);                         // knee joint, a chunky dark block
+  box(bend, 0.124, 0.06, 0.07, B, 0, 0, 0);
+  box(bend, 0.085, shin - 0.07, 0.095, W, 0, -shin / 2 + 0.01, 0);
+  box(bend, 0.087, 0.03, 0.097, L, 0, -shin * 0.6, 0);
+  const foot = new THREE.Group();
+  foot.position.y = -shin;
+  foot.rotation.x = -b;                                           // ankle and foot level
+  bend.add(foot);
+  box(foot, 0.09, 0.06, 0.1, W, 0, 0.045, 0);                     // ankle
+  box(foot, 0.115, 0.075, 0.125, B, 0, -0.015, -0.005);               // black foot block
+  hip.userData.knee = knee;
+  hip.userData.foot = foot;
+  return hip;
+}
+
+// Pixel digits for the "02" on the dog's head (3x5 cells, drawn as small boxes).
+const DIGITS = { 0: ['111', '101', '101', '101', '111'], 2: ['111', '001', '111', '100', '111'] };
+function digits(p, text, x, y, z, cell, mat, side) {
+  [...text].forEach((ch, k) => DIGITS[ch].forEach((row, r) => [...row].forEach((c, i) => {
+    if (c === '1') box(p, 0.006, cell, cell, mat, x, y - r * cell, z + side * (k * 4 + i) * cell);
+  })));
+}
+
+// Third robot "Dog", built after the Unitree-style reference sheet: a long light trunk with
+// a black spine panel, a head block as tall as the trunk, motor cubes on the hips and shoulders,
+// legs with backward knees.
+function buildDog(model, mats) {
+  const W = mats.body, L = mats.shade, D = mats.dark, B = mats.black, Y = mats.accent;
+  const red = mat(0xff2b3a, true), yellow = mat(0xffd21f, true), white = mat(0xf2f4fa, true);
+  // trunk (behind the head), darker belly
+  box(model, 0.25, 0.2, 0.775, W, 0, 0.6, 0.0875);
+  box(model, 0.252, 0.035, 0.777, L, 0, 0.517, 0.0875);
+  box(model, 0.2, 0.03, 0.72, B, 0, 0.49, 0.09);
+  // neck: a dark, narrower joint between the trunk and the head, with light collars
+  box(model, 0.15, 0.13, 0.17, D, 0, 0.6, -0.38);
+  box(model, 0.17, 0.035, 0.05, L, 0, 0.665, -0.33);
+  box(model, 0.17, 0.035, 0.04, L, 0, 0.665, -0.44);
+  box(model, 0.11, 0.05, 0.17, B, 0, 0.52, -0.38);
+  box(model, 0.09, 0.012, 0.52, B, 0, 0.705, 0.04);              // black spine panel
+  // raised box with the red light on top, towards the tail
+  box(model, 0.12, 0.045, 0.1, W, 0, 0.72, 0.16);
+  box(model, 0.06, 0.02, 0.03, red, 0, 0.74, 0.205);
+  box(model, 0.08, 0.025, 0.06, L, 0, 0.71, -0.24);               // small cover behind the head
+  // rear face: black band with a yellow light
+  box(model, 0.07, 0.15, 0.012, B, 0, 0.6, 0.477);
+  box(model, 0.03, 0.03, 0.014, yellow, 0, 0.55, 0.479);
+  for (const s of [-1, 1]) {
+    // long dark slot along the side with two status lights and two black squares
+    box(model, 0.012, 0.075, 0.34, D, s * 0.126, 0.6, 0.04);
+    box(model, 0.014, 0.05, 0.05, B, s * 0.128, 0.6, -0.07);
+    box(model, 0.014, 0.05, 0.05, B, s * 0.128, 0.6, 0.15);
+    box(model, 0.015, 0.022, 0.03, Y, s * 0.129, 0.62, 0.04, true);
+    box(model, 0.015, 0.022, 0.03, Y, s * 0.129, 0.583, 0.04, true);
+    // motor cubes: dark block, a light cap on the outside
+    for (const z of [-0.27, 0.42]) {
+      box(model, 0.1, 0.15, 0.15, D, s * 0.17, 0.585, z);
+      box(model, 0.03, 0.12, 0.12, W, s * 0.226, 0.59, z);
+      box(model, 0.032, 0.03, 0.122, L, s * 0.227, 0.54, z);
+    }
+  }
+
+  // head: in front of the neck, as tall as the trunk, slightly rounded front, a black band down the middle with a
+  // camera lens on top and the yellow light below; "02" and stripes on both sides; dark grill
+  // under the chin. Accessories sit on its top.
+  const head = new THREE.Group();
+  head.position.set(0, 0.5, -0.53);
+  model.add(head);
+  box(head, 0.23, 0.21, 0.15, W, 0, 0.115, 0);
+  box(head, 0.2, 0.19, 0.02, W, 0, 0.115, -0.083);                // rounded front
+  box(head, 0.232, 0.035, 0.152, L, 0, 0.035, 0);
+  box(head, 0.075, 0.17, 0.012, B, 0, 0.115, -0.094);             // black band
+  box(head, 0.035, 0.035, 0.014, D, 0, 0.17, -0.098);             // camera lens
+  box(head, 0.015, 0.015, 0.016, mat(0x6a6e88, true), 0, 0.17, -0.1);
+  const eye = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.034, 0.014), mats.eyes);
+  eye.position.set(0, 0.06, -0.1);
+  head.add(eye);
+  for (const s of [-1, 1]) {
+    box(head, 0.006, 0.08, 0.1, L, s * 0.116, 0.12, 0.01);        // number plate
+    // reads left to right from either side; the stripes always sit behind the number
+    digits(head, '02', s * 0.12, 0.15, s < 0 ? -0.065 : -0.002, 0.009, white, -s);
+    for (const dz of [0.035, 0.055]) box(head, 0.006, 0.07, 0.008, white, s * 0.12, 0.12, dz).rotation.x = 0.55;
+  }
+  box(head, 0.17, 0.06, 0.12, B, 0, -0.02, -0.01);                // grill under the chin
+  for (const dx of [-0.06, -0.03, 0, 0.03, 0.06]) box(head, 0.014, 0.065, 0.125, D, dx, -0.02, -0.01);
+
+  // front legs act as "arms", hind legs as "legs" for the shared animations
+  const arms = [-1, 1].map((s) => dogLeg(model, mats, s * 0.2, -0.27, 0.2, 0.33, 0.39, 0.61));
+  const legs = [-1, 1].map((s) => dogLeg(model, mats, s * 0.2, 0.42, 0.236, 0.63, 0.36, 0.49));
+  return { legs, arms, head, eyes: [eye] };
+}
+
+// Titan, after its reference render: wide light chest with dark shoulder joints, a lit square in
+// a black frame above a big red pentagon that runs into the black belly, a light waist band,
+// thick legs with red marks and black knee pads, boots with light toe caps; the head has a
+// light cap, big dark ears and a black visor with two wide glowing eyes.
 function buildTitan(model, mats) {
   const W = mats.body, L = mats.shade, D = mats.dark, B = mats.black, Y = mats.accent;
-  // long legs: silver thigh with a red mark, dark knee pad, silver shin, dark boot with a silver toe
   const legs = [-1, 1].map((s) => {
     const hip = new THREE.Group();
-    hip.position.set(s * 0.1, 0.735, 0);
+    hip.position.set(s * 0.098, 0.745, 0);
     model.add(hip);
-    box(hip, 0.11, 0.27, 0.12, W, 0, -0.135, 0);
-    box(hip, 0.112, 0.05, 0.122, L, 0, -0.03, 0);
-    box(hip, 0.035, 0.13, 0.01, Y, s * 0.025, -0.16, -0.062);   // accent stripe on the thigh
-    box(hip, 0.01, 0.13, 0.05, Y, s * 0.056, -0.16, -0.02);
+    box(hip, 0.165, 0.27, 0.16, W, 0, -0.14, 0);                  // thick thigh
+    box(hip, 0.03, 0.27, 0.162, L, -s * 0.07, -0.14, 0);          // shaded inner side
+    box(hip, 0.024, 0.07, 0.01, Y, s * 0.04, -0.2, -0.082);       // red mark
     const knee = new THREE.Group();
     knee.position.y = -0.29;
     hip.add(knee);
-    box(knee, 0.125, 0.09, 0.14, D, 0, -0.01, -0.005);
-    box(knee, 0.08, 0.05, 0.02, Y, 0, -0.01, -0.08);            // knee plate
-    box(knee, 0.12, 0.25, 0.125, W, 0, -0.17, 0);
-    box(knee, 0.122, 0.04, 0.127, L, 0, -0.08, 0);
-    box(knee, 0.15, 0.1, 0.2, B, 0, -0.35, -0.02);
-    box(knee, 0.152, 0.04, 0.06, L, 0, -0.32, -0.1);
-    box(knee, 0.154, 0.025, 0.2, Y, 0, -0.38, -0.02);           // boot stripe
-    box(knee, 0.156, 0.03, 0.205, D, 0, -0.43, -0.02);
+    box(knee, 0.15, 0.08, 0.15, D, 0, 0.01, 0);                   // knee joint
+    box(knee, 0.13, 0.11, 0.05, B, 0, 0.0, -0.085);               // black knee pad
+    box(knee, 0.155, 0.29, 0.15, W, 0, -0.18, 0);                 // shin
+    box(knee, 0.03, 0.29, 0.152, L, s * 0.064, -0.18, 0);         // shaded outer side
+    box(knee, 0.12, 0.04, 0.12, D, 0, -0.335, 0);                 // ankle
+    box(knee, 0.17, 0.09, 0.23, D, 0, -0.395, -0.025);            // boot
+    box(knee, 0.172, 0.05, 0.07, W, 0, -0.4, -0.115);             // light toe cap
+    box(knee, 0.175, 0.03, 0.235, B, 0, -0.44, -0.025);           // sole
     hip.userData.knee = knee;
     return hip;
   });
 
-  // pelvis: silver plate over dark joints
-  box(model, 0.17, 0.08, 0.14, L, 0, 0.775, 0);
-  box(model, 0.21, 0.05, 0.13, D, 0, 0.73, 0);
-  // dark abdomen, silver chest with the red core and a glowing square light above it
-  box(model, 0.23, 0.15, 0.17, B, 0, 0.885, 0);
-  box(model, 0.08, 0.02, 0.172, L, 0, 0.83, 0);
-  box(model, 0.34, 0.22, 0.23, W, 0, 1.065, 0);
-  box(model, 0.342, 0.03, 0.232, L, 0, 0.965, 0);
-  box(model, 0.13, 0.09, 0.02, Y, 0, 0.995, -0.118);
-  box(model, 0.08, 0.05, 0.02, Y, 0, 0.935, -0.112);
-  for (const s of [-1, 1]) box(model, 0.03, 0.2, 0.02, Y, s * 0.155, 1.07, -0.112); // side trims
-  box(model, 0.075, 0.065, 0.02, B, 0, 1.085, -0.119);
-  box(model, 0.04, 0.035, 0.022, mats.dot, 0, 1.085, -0.121);
-  box(model, 0.015, 0.015, 0.024, mats.eyes, 0, 1.085, -0.122);
-  for (const s of [-1, 1]) box(model, 0.04, 0.04, 0.02, D, s * 0.12, 1.02, -0.116);
-  box(model, 0.08, 0.04, 0.07, D, 0, 1.195, 0);
+  // pelvis: light crotch plate between dark hip joints, dark waist, light waist band
+  box(model, 0.13, 0.1, 0.15, W, 0, 0.72, 0);
+  for (const s of [-1, 1]) box(model, 0.06, 0.09, 0.14, D, s * 0.13, 0.75, 0);
+  box(model, 0.26, 0.04, 0.16, B, 0, 0.79, 0);
+  box(model, 0.24, 0.025, 0.17, L, 0, 0.825, 0);
+  // black belly, the light chest above it
+  box(model, 0.3, 0.16, 0.2, B, 0, 0.92, 0);
+  box(model, 0.4, 0.23, 0.24, W, 0, 1.08, 0);
+  box(model, 0.402, 0.03, 0.242, L, 0, 0.98, 0);
+  for (const s of [-1, 1]) {
+    box(model, 0.07, 0.07, 0.02, L, s * 0.16, 1.15, -0.122);      // shaded shoulder corners
+    box(model, 0.08, 0.1, 0.02, L, s * 0.15, 1.02, -0.121);
+    box(model, 0.06, 0.08, 0.02, B, s * 0.075, 0.99, -0.121);     // black wedges beside the pentagon
+  }
+  // red pentagon pointing down into the belly
+  box(model, 0.13, 0.07, 0.02, Y, 0, 0.99, -0.124);
+  box(model, 0.1, 0.035, 0.02, Y, 0, 0.94, -0.124);
+  box(model, 0.06, 0.03, 0.02, Y, 0, 0.91, -0.124);
+  // lit square in a black frame
+  box(model, 0.085, 0.075, 0.02, B, 0, 1.115, -0.122);
+  box(model, 0.05, 0.045, 0.022, mats.dot, 0, 1.115, -0.124);
+  box(model, 0.02, 0.02, 0.024, mats.eyes, 0, 1.115, -0.126);
+  box(model, 0.1, 0.04, 0.1, D, 0, 1.205, 0);                     // neck
 
-  // arms: dark shoulder block, long silver arm, dark hand
+  // arms: dark shoulder joint with a square inset, one long light segment, dark wrist and hand
   const arms = [-1, 1].map((s) => {
     const sh = new THREE.Group();
-    sh.position.set(s * 0.215, 1.14, 0);
+    sh.position.set(s * 0.245, 1.15, 0);
     model.add(sh);
-    box(sh, 0.11, 0.12, 0.13, D, s * 0.035, -0.04, 0);
-    box(sh, 0.06, 0.06, 0.135, Y, s * 0.035, -0.04, 0);         // accent square on the shoulder
-    box(sh, 0.1, 0.03, 0.112, Y, s * 0.035, -0.32, 0);           // cuff
-    box(sh, 0.1, 0.24, 0.11, W, s * 0.035, -0.21, 0);
-    box(sh, 0.102, 0.03, 0.112, L, s * 0.035, -0.12, 0);
-    box(sh, 0.105, 0.1, 0.115, B, s * 0.035, -0.38, 0);
+    box(sh, 0.13, 0.15, 0.15, D, s * 0.05, -0.05, 0);
+    box(sh, 0.05, 0.05, 0.155, B, s * 0.05, -0.05, 0);
+    box(sh, 0.125, 0.26, 0.135, W, s * 0.05, -0.25, 0);
+    box(sh, 0.127, 0.04, 0.137, L, s * 0.05, -0.15, 0);
+    box(sh, 0.03, 0.26, 0.137, L, s * 0.1, -0.25, 0);
+    box(sh, 0.1, 0.03, 0.11, D, s * 0.05, -0.395, 0);             // wrist
+    box(sh, 0.13, 0.11, 0.14, B, s * 0.05, -0.465, 0);            // hand
     return sh;
   });
 
-  // head: grey helmet, dark visor band with two glowing eyes, silver face plate, side ears
+  // head: light cap, grey block, big dark ears, black visor with wide glowing eyes,
+  // light lower face with a seam and a dark chin
   const head = new THREE.Group();
-  head.position.set(0, 1.215, 0);
+  head.position.set(0, 1.22, 0);
   model.add(head);
-  box(head, 0.2, 0.21, 0.2, L, 0, 0.105, 0);
-  box(head, 0.202, 0.05, 0.202, W, 0, 0.19, 0);
-  box(head, 0.19, 0.055, 0.02, B, 0, 0.13, -0.1);
-  box(head, 0.12, 0.07, 0.02, W, 0, 0.06, -0.101);
+  box(head, 0.24, 0.22, 0.23, L, 0, 0.11, 0);
+  box(head, 0.242, 0.055, 0.232, W, 0, 0.195, 0);
+  box(head, 0.16, 0.02, 0.02, D, -0.02, 0.2, -0.117);             // dark strip on the cap front
+  for (const s of [-1, 1]) {
+    box(head, 0.035, 0.14, 0.17, D, s * 0.135, 0.12, 0.01);       // ears
+    box(head, 0.02, 0.06, 0.08, B, s * 0.155, 0.12, 0.01);
+  }
+  box(head, 0.22, 0.06, 0.02, B, 0, 0.135, -0.116);               // visor
   const eyes = [-1, 1].map((s) => {
-    const e = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.025, 0.02), mats.eyes);
-    e.position.set(s * 0.042, 0.132, -0.108);
+    const e = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.026, 0.02), mats.eyes);
+    e.position.set(s * 0.052, 0.137, -0.124);
     head.add(e);
     return e;
   });
-  for (const s of [-1, 1]) {
-    box(head, 0.03, 0.1, 0.12, D, s * 0.112, 0.11, 0.01);
-    box(head, 0.034, 0.03, 0.07, Y, s * 0.113, 0.11, 0.01);
-  }
+  box(head, 0.16, 0.08, 0.02, W, 0, 0.065, -0.116);               // lower face
+  box(head, 0.014, 0.05, 0.022, D, -0.03, 0.065, -0.117);         // seam
+  box(head, 0.1, 0.03, 0.022, D, 0, 0.02, -0.117);                // chin
   return { legs, arms, head, eyes };
 }
 
@@ -325,6 +451,10 @@ export function paintRobot(robot, colors) {
   if (colors.yellow != null) m.accent.color.setHex(colors.yellow);
   if (colors.black != null) m.black.color.setHex(colors.black);
   if (colors.dark != null) m.dark.color.setHex(colors.dark);
+  // accents glow a little (more in the neon schemes) so they read on any body colour
+  if (colors.glow != null && colors.yellow != null) m.accent.emissive.setHex(colors.yellow).multiplyScalar(colors.glow);
+  // the light bands can glow too (neon schemes)
+  if (colors.light != null) m.shade.emissive.setHex(colors.light).multiplyScalar(colors.bandGlow ?? 0);
   if (colors.eyes != null) m.eyes.color.setHex(colors.eyes);
 }
 
@@ -1513,23 +1643,78 @@ export const DECALS = {
 
 // ---------------------------------------------------------------- flight center & jetpack
 // A landing pad across the whole street (the robot cannot miss it) under a neon arch, with hangars.
-export function flightCenter(p, half) {
+// Ability stations (flight center, shield generator): a glowing pad across the street, a ring
+// in the middle under a hologram, and tall booths with screens on both sides, all in the
+// station's own colour so it reads from far away.
+export const STATION_COLOR = { flight: 0x35e6ff, shield: 0x6dffb0 };
+export function station(p, half, kind) {
+  const c = STATION_COLOR[kind] ?? 0x35e6ff;
   const w = half * 2 + 1.4;
-  box(p, w, 0.04, 0.96, 0x2a2c48, 0, 0.02, 0);
-  for (const z of [-0.45, 0.45]) box(p, w, 0.03, 0.05, 0x35e6ff, 0, 0.045, z, true);
+  box(p, w, 0.04, 0.96, 0x23253e, 0, 0.02, 0);
+  for (const z of [-0.45, 0.45]) box(p, w, 0.03, 0.06, c, 0, 0.045, z, true);
   for (let x = -half; x <= half; x++) {
+    if (x === 0) continue;
     // chevrons pointing forward on every cell
     for (const s of [-1, 1]) box(p, 0.3, 0.012, 0.07, 0xffd21f, x + s * 0.1, 0.045, 0.05, true).rotation.y = s * 0.7;
   }
+  // ring under the hologram
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.34, 0.46, 24), new THREE.MeshBasicMaterial({ color: c }));
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.05;
+  p.add(ring);
+  box(p, 0.5, 0.02, 0.5, 0x1a1c34, 0, 0.042, 0);
   for (const s of [-1, 1]) {
-    const x = s * (half + 1.6);
-    box(p, 1.8, 1.6, 0.96, 0x3a3e66, x, 0.8, 0);
-    box(p, 1.4, 0.4, 0.96, 0x4a4f78, x, 1.8, 0);
-    box(p, 0.8, 0.3, 0.96, 0x4a4f78, x, 2.15, 0);
-    box(p, 1.2, 1.0, 0.04, 0x1a2240, x, 0.6, 0.49);
-    box(p, 1.22, 0.05, 0.05, 0x35e6ff, x, 1.12, 0.5, true);
-    for (const dz of [-0.3, 0.3]) box(p, 0.1, 0.1, 0.1, 0xff2b4a, x + s * 0.85, 1.7, dz, true);
+    const x = s * (half + 1.7);
+    box(p, 1.6, 2.6, 0.96, 0x2e3256, x, 1.3, 0);                // booth
+    box(p, 1.7, 0.12, 1.0, c, x, 2.66, 0, true);                // neon roof edge
+    box(p, 1.3, 0.3, 1.0, 0x3a3e66, x, 2.85, 0);
+    box(p, 0.08, 1.2, 0.08, 0x55597a, x - s * 0.5, 3.6, 0);     // antenna
+    box(p, 0.16, 0.16, 0.16, 0xff2b4a, x - s * 0.5, 4.25, 0, true);
+    box(p, 1.2, 1.0, 0.04, 0x0b1426, x, 1.5, 0.49);              // screen
+    box(p, 1.22, 0.06, 0.05, c, x, 2.04, 0.5, true);
+    box(p, 1.22, 0.06, 0.05, c, x, 0.98, 0.5, true);
+    box(p, 0.06, 2.6, 0.06, c, x - s * 0.82, 1.3, 0.47, true);   // corner light on the street side
   }
+}
+
+// The hologram above the ring: the reward of the station, turning slowly in a beam of light.
+export function stationHolo(kind) {
+  const c = STATION_COLOR[kind] ?? 0x35e6ff;
+  const g = new THREE.Group();
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.46, 2.4, 16, 1, true), ADD(c, 0.16));
+  beam.position.y = 1.25;
+  g.add(beam);
+  const holo = new THREE.Group();
+  holo.position.y = 1.7;
+  g.add(holo);
+  const mat = new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.85 });
+  const glowMat = ADD(c, 0.35);
+  if (kind === 'shield') {
+    // hexagonal shield with a bright rim
+    const hex = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.08, 6), mat);
+    hex.rotation.x = Math.PI / 2;
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.56, 0.05, 6, 6), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    rim.rotation.z = Math.PI / 6;
+    const core = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.12, 6), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    core.rotation.x = Math.PI / 2;
+    holo.add(hex, rim, core);
+  } else {
+    // jetpack: two tanks, a strap plate and flames
+    for (const sx of [-1, 1]) {
+      const tank = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.62, 0.26), mat);
+      tank.position.x = sx * 0.17;
+      const flame = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.34, 0.16), new THREE.MeshBasicMaterial({ color: 0xffa21a }));
+      flame.position.set(sx * 0.17, -0.5, 0);
+      holo.add(tank, flame);
+    }
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.5, 0.1), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    plate.position.z = 0.12;
+    holo.add(plate);
+  }
+  const halo = new THREE.Mesh(new THREE.SphereGeometry(0.75, 12, 10), glowMat);
+  holo.add(halo);
+  g.userData = { holo, beam };
+  return g;
 }
 
 export function makeJetpack() {

@@ -8,7 +8,7 @@ import { Environment, DISTRICTS, districtAt, districtIndex } from './env.js';
 import * as NPC from './npc.js';
 import * as G from './garage.js';
 import * as LB from './leaderboard.js';
-import { wiresGame } from './minigame.js';
+import { wiresGame, shieldGame } from './minigame.js';
 
 // ---------------------------------------------------------------- config
 const BG = '#1d1f3f';
@@ -137,7 +137,7 @@ function withRng(salt, fn) {
 function resetGen() {
   gen = {
     type: 'safe', left: 0, style: 'sidewalk', cw: 0,
-    lastViaduct: 0, lastDistrict: 0, nextCenter: 32,
+    lastViaduct: 0, lastDistrict: 0, nextCenter: 110, stations: 0,
     last: {}, prevHazard: null, tension: 0,
     trail: 0, trailCol: 0,
   };
@@ -150,20 +150,26 @@ const difficulty = (row) => Math.min(row / 160, 1);
 
 // Hazard groups: when they unlock, base weight, how many rows, how long until the same kind
 // may appear again, and how much "tension" one row adds.
+const STATION_ORDER = ['flight', 'shield'];
+// lanes the robot has to time: the sidewalk in front of them is a safe place to wait
+const WAIT_FOR = new Set(['road', 'hover', 'water', 'gap', 'rail', 'laser', 'scan', 'build', 'patrol']);
+const STATION_NAME = { flight: 'ЛЁТНЫЙ ЦЕНТР', shield: 'ЩИТ-ГЕНЕРАТОР' };
+
 const HAZARDS = {
-  road: { from: 4, w: () => 50, len: (r) => [1, r < 20 ? 2 : r < 60 ? 3 : 4], cool: 0, tension: 1 },
+  road: { from: 4, w: () => 48, len: (r) => [1, r < 30 ? 2 : 3], cool: 0, tension: 1 },
   water: { from: 8, w: () => 15, len: (r) => [1, r < 30 ? 2 : 3], cool: 4, tension: 1 },
-  gap: { from: 20, w: () => 9, len: (r) => [1, r < 40 ? 2 : 3], cool: 8, tension: 1.2 },
+  gap: { from: 20, w: () => 8, len: (r) => [1, r < 60 ? 2 : 3], cool: 10, tension: 1.2 },
   rail: { from: 14, w: () => 14, len: () => [1, 1], cool: 10, tension: 1.5 },
   hover: { from: 20, w: () => 16, len: () => [1, 2], cool: 4, tension: 1.3 },
-  laser: { from: 25, w: (r) => Math.min(9, 4 + r / 30), len: () => [1, 1], cool: 8, tension: 2 },
-  scan: { from: 40, w: (r) => Math.min(7, 2 + r / 40), len: () => [1, 1], cool: 10, tension: 2 },
-  build: { from: 30, w: (r) => Math.min(10, 4 + r / 25), len: () => [1, 1], cool: 8, tension: 1.8 },
+  laser: { from: 28, w: (r) => Math.min(7, 3 + r / 35), len: () => [1, 1], cool: 10, tension: 2 },
+  scan: { from: 45, w: (r) => Math.min(6, 2 + r / 45), len: () => [1, 1], cool: 12, tension: 2 },
+  build: { from: 32, w: (r) => Math.min(7, 3 + r / 30), len: () => [1, 1], cool: 10, tension: 1.8 },
+  patrol: { from: 22, w: (r) => Math.min(10, 5 + r / 30), len: () => [1, 1], cool: 6, tension: 1.6 },
 };
 // Each district leans towards its own kind of trouble.
 const DISTRICT_BIAS = {
-  downtown: { road: 1.25 },
-  tokyo: { hover: 1.8, scan: 1.3, road: 0.9 },
+  downtown: { road: 1.25, patrol: 1.3 },
+  tokyo: { hover: 1.8, scan: 1.3, road: 0.9, patrol: 1.2 },
   eco: { water: 1.8, road: 0.8, gap: 0.5, laser: 0.6, build: 0.5 },
   industrial: { rail: 1.8, laser: 1.5, water: 0.7, build: 2.2 },
   port: { water: 2.6, build: 1.5, road: 0.7, gap: 0.4 },
@@ -238,8 +244,10 @@ function planOne() {
     // neon gate on the first sidewalk of a new district, monorail every ~22 rows
     const gate = type === 'safe' && districtIndex(planRow) !== gen.lastDistrict;
     if (gate) gen.lastDistrict = districtIndex(planRow);
-    const center = type === 'safe' && !gate && gen.style !== 'park' && planRow >= gen.nextCenter;
-    if (center) gen.nextCenter = planRow + 80;
+    // ability stations: the flight center first, then the shield generator, taking turns
+    const center = type === 'safe' && !gate && gen.style !== 'park' && planRow >= gen.nextCenter
+      ? STATION_ORDER[gen.stations++ % STATION_ORDER.length] : null;
+    if (center) gen.nextCenter = planRow + 120;
     const viaduct = type === 'safe' && !gate && !center && planRow - gen.lastViaduct > 22;
     if (viaduct) gen.lastViaduct = planRow;
     // coin trail through breather zones, wandering one column at a time
@@ -286,7 +294,7 @@ function createLane(row) {
   M.setDistrict(lane.district);
   ({
     safe: buildSafe, road: buildRoad, hover: buildRoad, gap: buildGap, rail: buildRail,
-    laser: buildLaser, scan: buildScan, water: buildWater, build: buildBuild,
+    laser: buildLaser, scan: buildScan, water: buildWater, build: buildBuild, patrol: buildPatrol,
   })[lane.type](lane);
   lane.group.position.z = -row;
   scene.add(lane.group);
@@ -338,6 +346,14 @@ function reachCells(entry, open) {
     }
   }
   return reach;
+}
+
+function shuffleArr(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 function placeCoin(lane, x) {
@@ -442,22 +458,42 @@ function buildSafe(lane) {
     const crossAlley = bp && bp.idx % 3 === 2;
     // obstacle budget per row: open enough to breathe, ground details fill the rest
     const n = row <= 3 ? 1
-      : bp ? (crossAlley ? randInt(1, 2) : weighted({ 1: 50, 2: 38, 3: 12 }) | 0)
-      : park ? weighted({ 0: 25, 1: 55, 2: 20 }) | 0
-      : weighted({ 0: 40, 1: 45, 2: 15 }) | 0;
-    const all = freeCells(lane).filter((x) => row > 3 || x !== 0);
+      : bp ? (crossAlley ? randInt(0, 1) : weighted({ 0: 12, 1: 52, 2: 36 }) | 0)
+      : park ? weighted({ 0: 30, 1: 52, 2: 18 }) | 0
+      : weighted({ 0: 38, 1: 47, 2: 15 }) | 0;
+    // spread obstacles out: not next to each other, not stacked on the ones in the row below
+    const below = lanes.get(row - 1)?.blocked ?? new Set();
+    const nearBelow = (x) => below.has(x - 1) || below.has(x) || below.has(x + 1);
+    let all = freeCells(lane).filter((x) => row > 3 || x !== 0);
+    const spread = all.filter((x) => !nearBelow(x));
+    if (spread.length >= n + 2) all = spread;
     cells = [];
-    while (cells.length < n) {
+    for (let tries = 0; cells.length < n && tries < 30; tries++) {
       const x = pick(all);
-      if (!cells.includes(x)) cells.push(x);
+      if (!cells.includes(x) && !cells.includes(x - 1) && !cells.includes(x + 1)) cells.push(x);
     }
     // never block the coin trail, and always keep at least two ways in from the lane below
     if (inf.trail != null) cells = cells.filter((x) => x !== inf.trail);
     // the robot must be able to get in from the lane below and still have room to move:
     // drop obstacles until at least two cells of this lane are reachable
     const entry = entryCells(lanes.get(row - 1));
+    // No pockets and no long detours: wherever the robot can stand below, it can walk along its
+    // own free stretch there and step up within two cells to the side.
     const open = () => freeCells(lane).filter((x) => !cells.includes(x));
-    while (cells.length && (reachCells(entry, open()).size < 2 || (entry && [...entry].filter((x) => !cells.includes(x)).length < Math.min(2, entry.size)))) cells.pop();
+    const stretch = (x) => {
+      if (!entry) return [x];
+      const run = [x];
+      for (const d of [-1, 1]) for (let y = x + d; entry.has(y); y += d) run.push(y);
+      return run;
+    };
+    const fair = () => {
+      const o = open();
+      if (reachCells(entry, o).size < 2) return false;
+      if (entry && [...entry].filter((x) => !cells.includes(x)).length < Math.min(2, entry.size)) return false;
+      const from = entry ? [...entry] : freeCells(lane);
+      return from.every((x) => stretch(x).some((y) => o.includes(y) && Math.abs(y - x) <= 2));
+    };
+    while (cells.length && !fair()) cells.pop();
   }
   const standing = [];
   if (row <= -3) {
@@ -484,7 +520,7 @@ function buildSafe(lane) {
 
   // Electrified floor panels on plazas further into the city.
   const tileCells = [];
-  if (row > 30 && inf.style === 'plaza' && !curb && Math.random() < 0.3) {
+  if (row > 40 && inf.style === 'plaza' && !curb && !WAIT_FOR.has(lane.nextType) && Math.random() < 0.18) {
     const free = freeCells(lane);
     const n = row > 80 && Math.random() < 0.3 ? 2 : 1;
     for (let i = 0; i < n && free.length; i++) {
@@ -540,14 +576,19 @@ function buildSafe(lane) {
     gapNear = Math.max(gapNear, 2.2);
   }
   if (inf.center) {
-    M.flightCenter(group, HALF);
-    M.gate(group, 'ЛЁТНЫЙ ЦЕНТР', '#0a1a2a', '#35e6ff', 0x35e6ff);
+    const c = M.STATION_COLOR[inf.center];
+    M.station(group, HALF, inf.center);
+    M.gate(group, STATION_NAME[inf.center], '#0a1a2a', `#${c.toString(16).padStart(6, '0')}`, c);
   }
   if (inf.viaduct) M.viaduct(group);
   if (inf.gate) M.gate(group, D.name, D.fg, D.bg, D.neonHex);
   groundDetails(lane, park, curb);
   skyline(group, gapNear);
   M.bake(group);
+  if (inf.center) {
+    lane.holo = M.stationHolo(inf.center);
+    group.add(lane.holo);
+  }
 
   if (inf.viaduct) {
     const mesh = M.makeTrain();
@@ -589,14 +630,17 @@ function buildSafe(lane) {
     }
   }
   // Robotic lawn mower trimming a big park.
-  if (bp && bp.idx > 0 && bp.idx < bp.len - 1 && lane.blocked.size <= 2 && Math.random() < 0.3) {
+  if (bp && bp.idx === Math.floor(bp.len / 2) && lane.blocked.size <= 1 && Math.random() < 0.45) {
     const mesh = M.makeMower();
     group.add(mesh);
     lane.patrol = { mesh, x: rand(-HALF, HALF), dir: Math.random() < 0.5 ? 1 : -1, speed: rand(0.8, 1.2), beep: 0, mower: true };
   }
 
   // Patrol drone sweeping the sidewalk.
-  if (row > 45 && inf.style === 'sidewalk' && !inf.viaduct && !inf.gate && lane.blocked.size < 2 && Math.random() < 0.15) {
+  // (inside a run of sidewalks or a plaza, never right in front of a road or water: that is where
+  // the robot waits)
+  if (row > 30 && (inf.style === 'sidewalk' || inf.style === 'plaza') && !inf.park && !inf.center && !WAIT_FOR.has(lane.nextType)
+    && !inf.viaduct && !inf.gate && lane.blocked.size < 2 && Math.random() < 0.25) {
     const mesh = M.makePatrol();
     group.add(mesh);
     lane.patrol = { mesh, x: rand(-HALF, HALF), dir: Math.random() < 0.5 ? 1 : -1, speed: rand(1.1, 1.7) * (1 + difficulty(row) * 0.5), beep: 0 };
@@ -645,14 +689,24 @@ function buildRoad(lane) {
 
   const d = difficulty(lane.row);
   lane.speed = (hover ? rand(3.6, 5.2) : rand(1.4, 2.8)) * (1 + d * 0.8);
-  const count = hover ? randInt(1, 2) : lane.row < 12 ? randInt(1, 2) : randInt(1, 3);
+  // Several lanes side by side: a lane going the same way as the one below must be clearly
+  // faster or slower, otherwise a wall of cars could keep its shape and never open up.
+  const nb = prev && (prev.type === 'road' || prev.type === 'hover') ? prev : null;
+  if (nb && nb.dir === lane.dir) {
+    const r = lane.speed / nb.speed;
+    if (r > 0.75 && r < 1.33) lane.speed = nb.speed * (Math.random() < 0.5 ? 0.7 : 1.4);
+  }
+  const multi = lane.prevType === 'road' || lane.prevType === 'hover' || lane.nextType === 'road' || lane.nextType === 'hover';
+  const count = hover ? randInt(1, 2) : lane.row < 12 ? randInt(1, 2) : multi ? weighted({ 1: 35, 2: 50, 3: 15 }) | 0 : randInt(1, 3);
   const list = [];
   for (let i = 0; i < count; i++) {
     const mesh = M.makeVehicle(weighted(hover ? HOVER_KINDS : ROAD_KINDS));
     if (lane.dir < 0) mesh.rotation.y = Math.PI;
     list.push({ mesh, len: mesh.userData.len, x: 0, hover: mesh.userData.hover, flash: mesh.userData.flash, phase: rand(0, 6), voice: rand(0.85, 1.2) });
   }
-  placeMovers(lane, list, 3);
+  // stagger against the lane below: its cars and ours do not line up into a wall
+  const start = nb && nb.movers.length ? wrap(nb.movers[0].x + LOOP / (2 * Math.max(1, count))) : rand(-SPAWN, SPAWN);
+  placeMovers(lane, list, 3.4, start);
   for (const v of list) v.honk = 0;
   maybeCoin(lane, 0.03);
 }
@@ -701,7 +755,7 @@ function buildGap(lane) {
     const mesh = M.makePad(len);
     list.push({ mesh, len, x: 0, hover: true, phase: rand(0, 6) });
   }
-  placeMovers(lane, list, 1.6);
+  placeMovers(lane, list, 1.6, floatStart(lane, list.length));
 }
 
 function buildRail(lane) {
@@ -741,6 +795,17 @@ function buildLaser(lane) {
   group.add(beams.group);
   const d = difficulty(lane.row);
   lane.laser = { ...beams, phase: 'off', t: rand(0.5, 2.5), off: rand(1.6, 2.6) * (1 - d * 0.3), on: rand(1.0, 1.4) };
+}
+
+// Patrol zone: a security strip with a drone flying back and forth across the street.
+function buildPatrol(lane) {
+  securityGround(lane);
+  for (const s of [-1, 1]) M.box(lane.group, 0.12, 1.6, 0.12, 0x55597a, s * (HALF + 0.8), 0.8, 0.35);
+  M.bake(lane.group);
+  const mesh = M.makePatrol();
+  lane.group.add(mesh);
+  const d = difficulty(lane.row);
+  lane.patrol = { mesh, x: rand(-HALF, HALF), dir: Math.random() < 0.5 ? 1 : -1, speed: rand(1.4, 2.0) * (1 + d * 0.5), beep: 0 };
 }
 
 // Hovering scanner sweeping a red curtain back and forth.
@@ -882,17 +947,33 @@ function buildWater(lane) {
 
   const d = difficulty(lane.row);
   lane.dir = prev && prev.type === 'water' ? -prev.dir : Math.random() < 0.5 ? 1 : -1;
-  if (lane.row > 10 && Math.random() < 0.3) {
-    // anchored buoys: at least three spots inside the street, never moving
+  const buoysBelow = prev && prev.type === 'water' && prev.speed === 0;
+  if (lane.row > 10 && !buoysBelow && Math.random() < 0.3) {
+    // anchored buoys: one row per canal, 2-3 spots, never moving
     lane.speed = 0;
+    const want = randInt(2, 3);
+    const entry = entryCells(prev);
+    // one in front of every free stretch the robot can stand on below (no pockets), two of them
+    // at least where it can step on, the rest anywhere
     const cells = [];
-    while (cells.length < 3 + (Math.random() < 0.5 ? 1 : 0)) {
+    if (entry) {
+      const xs = [...entry].filter((x) => Math.abs(x) <= HALF).sort((a, b) => a - b);
+      const runs = [];
+      for (const x of xs) (runs.length && x === runs[runs.length - 1].at(-1) + 1 ? runs[runs.length - 1].push(x) : runs.push([x]));
+      // cover every stretch so a buoy is never more than two steps aside
+      for (const run of runs) {
+        for (let i = 0; i < run.length;) {
+          const at = run[Math.min(i + 2, run.length - 1)];
+          cells.push(at);
+          while (i < run.length && run[i] <= at + 2) i++;
+        }
+      }
+      for (const x of shuffleArr(xs)) if (cells.length < 2 && !cells.includes(x)) cells.push(x);
+    }
+    while (cells.length < want) {
       const x = randInt(-HALF, HALF);
       if (!cells.includes(x)) cells.push(x);
     }
-    // at least one buoy must be reachable from the lane below
-    const entry = entryCells(prev);
-    if (entry && entry.size && !cells.some((x) => entry.has(x))) cells[0] = pick([...entry]);
     for (const x of [-HALF - 3, HALF + 3]) cells.push(x);
     lane.movers = cells.map((x) => {
       const mesh = M.makeBuoy();
@@ -923,7 +1004,7 @@ function buildWater(lane) {
       lane.coins.push({ boat, off, mesh: coin, x: null });
     }
   }
-  placeMovers(lane, list, 1.6);
+  placeMovers(lane, list, 1.6, floatStart(lane, list.length));
 }
 
 // Construction site: a tower crane swinging a container across the street, or steel beams
@@ -1017,7 +1098,7 @@ function updateBuild(lane, dt, near) {
         burst(b.x, 0.2, -lane.row, [0x9a9078, 0xc8b898, 0x8a8ea8], 12, 2.5);
         if (near) sfx.clang();
         const rp = robot.root.position;
-        if (P.alive && Math.round(-rp.z) === lane.row && Math.abs(rp.x - b.x) < 0.55) die('beam');
+        if (P.alive && !P.fly && !(P.shield > 0) && Math.round(-rp.z) === lane.row && Math.abs(rp.x - b.x) < 0.55) die('beam');
       }
     } else if (b.phase === 'down') {
       if (b.t > 1.4) b.beam.position.y = 0.15 - (b.t - 1.4) * 1.2;
@@ -1031,12 +1112,21 @@ function updateBuild(lane, dt, near) {
   B.list = B.list.filter((b) => b.phase !== 'done');
 }
 
-function placeMovers(lane, list, minGap) {
+// Movers are spread evenly around the loop (a little jitter only), so they never bunch up and
+// leave a long empty stretch: that is what made the robot wait for a boat or a pad. `start`
+// sets the phase, e.g. to stagger a lane against its neighbour.
+// first platform half a gap away from the nearest one of a moving float lane below
+function floatStart(lane, n) {
+  const prev = lanes.get(lane.row - 1);
+  return prev && isFloat(prev.type) && prev.speed > 0 && prev.movers.length ? wrap(prev.movers[0].x + LOOP / (2 * n)) : rand(-SPAWN, SPAWN);
+}
+
+function placeMovers(lane, list, minGap, start = rand(-SPAWN, SPAWN)) {
   const total = list.reduce((s, m) => s + m.len, 0);
   const free = Math.max(0, LOOP - total - minGap * list.length);
-  const w = list.map(() => Math.random() + 0.3);
+  const w = list.map(() => 1 + rand(-0.2, 0.2));
   const ws = w.reduce((a, b) => a + b, 0);
-  let x = rand(-SPAWN, SPAWN);
+  let x = start;
   list.forEach((m, i) => {
     x += minGap + (free * w[i]) / ws;
     m.x = wrap(x + m.len / 2);
@@ -1061,6 +1151,12 @@ function updateLanes(dt) {
     // How loud this lane is for the robot (fades out a few rows away).
     const audible = (state === 'play' || state === 'menu') && P.alive;
     const k = audible ? clamp(1 - Math.abs(lane.row - P.row) / 6, 0, 1) : 0;
+    if (lane.holo) {
+      const h = lane.holo.userData;
+      h.holo.rotation.y += dt * 1.4;
+      h.holo.position.y = 1.7 + Math.sin(time * 2) * 0.1;
+      h.beam.material.opacity = 0.12 + 0.06 * Math.sin(time * 4);
+    }
     for (const v of lane.movers) {
       v.x = wrap(v.x + step);
       v.mesh.position.x = v.x;
@@ -1257,7 +1353,7 @@ function resetPlayer() {
     hop: null, queued: null,
     plat: null, platOff: 0,
     face: Math.PI, faceTarget: Math.PI,
-    jet: null, fly: null, shield: 0,
+    jet: null, fly: null, shield: 0, guard: null,
   });
   jetPack.visible = false;
   updateJetHud();
@@ -1355,7 +1451,8 @@ function land() {
   if (P.row > score) score = P.row;
   hud();
   if (P.jet && P.jet.charge < 1) { P.jet.charge = Math.min(1, P.jet.charge + 1 / JET_STEPS); updateJetHud(); }
-  if (lane.info.center && !lane.used && state === 'play') { lane.used = true; enterCenter(); return; }
+  if (P.guard && P.guard.charge < 1) { P.guard.charge = Math.min(1, P.guard.charge + 1 / SHIELD_STEPS); updateJetHud(); }
+  if (lane.info.center && !lane.used && state === 'play') { lane.used = true; enterStation(lane.info.center); return; }
   if (lane.type === 'safe') saveRun();
   const D = districtAt(P.row);
   if (D !== district) {
@@ -1374,7 +1471,67 @@ function land() {
 
 // One walking step (t = 0..1): the swing leg lifts, bends at the knee and reaches forward while
 // the stance leg pushes back; arms swing the other way, the body bobs a little.
+// Dog trot: diagonal pairs move together. The pair in the air swings forward with the knee
+// folding up, the other pair pushes back; the body bobs and the head nods.
+function dogStep(t) {
+  const [lL, lR] = robot.legs, [aL, aR] = robot.arms;
+  const reach = Math.sin(t * Math.PI);
+  const swing = stepSign > 0 ? [aL, lR] : [aR, lL];
+  const stance = stepSign > 0 ? [aR, lL] : [aL, lR];
+  for (const l of swing) {
+    l.rotation.set(-0.3 + t * 0.65, 0, 0);
+    l.userData.knee.rotation.x = reach * 0.75;
+  }
+  for (const l of stance) {
+    l.rotation.set(0.3 - t * 0.6, 0, 0);
+    l.userData.knee.rotation.x = reach * 0.1;
+  }
+  robot.model.rotation.x = Math.sin(t * Math.PI * 2) * 0.04;
+  robot.model.rotation.z = 0;
+  robot.model.position.y = reach * 0.03;
+  robot.head.rotation.set(-reach * 0.12, 0, 0);
+}
+
+// Dog standing: breathing through the knees, a look around, then a head tilt and a paw tap.
+// On a boat or pad it widens its stance.
+function dogIdle() {
+  const [lL, lR] = robot.legs, [aL, aR] = robot.arms;
+  const idle = P.idle ?? 0;
+  const breathe = Math.sin(time * 2.6) * 0.5 + 0.5;
+  const riding = !!P.plat;
+  robot.model.position.y = -breathe * 0.012;
+  robot.model.rotation.x = 0;
+  robot.model.rotation.z = riding ? Math.sin(time * 2.2) * 0.05 : 0;
+  const spread = riding ? 0.16 : 0;
+  for (const [l, s] of [[aL, -1], [aR, 1], [lL, -1], [lR, 1]]) {
+    l.rotation.set(0, 0, s * spread);
+    l.userData.knee.rotation.x = breathe * 0.08;
+  }
+  if (idle > 2.5) {
+    const tap = Math.max(0, Math.sin(time * 7));
+    aR.rotation.x = tap * 0.35;
+    aR.userData.knee.rotation.x = tap * 0.6;
+  }
+  robot.head.rotation.set(
+    Math.sin(time * 1.1) * 0.04,
+    idle > 1.2 ? Math.sin((idle - 1.2) * 1.4) * 0.45 : 0,
+    idle > 3.5 ? Math.sin((idle - 3.5) * 0.8) * 0.25 : 0,
+  );
+}
+
+// Dog flying: front paws tucked back, hind legs stretched out behind, thrusters under the paws.
+function dogFly(level) {
+  const [lL, lR] = robot.legs, [aL, aR] = robot.arms;
+  const flap = Math.sin(time * 5) * 0.06;
+  for (const l of [aL, aR]) { l.rotation.set(-0.7 * level + flap, 0, 0); l.userData.knee.rotation.x = 0.9 * level; }
+  for (const l of [lL, lR]) { l.rotation.set(-1.0 * level - flap, 0, 0); l.userData.knee.rotation.x = -0.6 * level; }
+  robot.model.rotation.x = 0.1 * level;
+  robot.model.position.set(0, 0.06 * level, 0);
+  robot.head.rotation.set(-0.15 * level, 0, 0);
+}
+
 function posePlayer(a, t = 0) {
+  if (robot.kind === 'dog') return dogStep(t);
   const [lL, lR] = robot.legs, [aL, aR] = robot.arms;
   const swing = stepSign > 0 ? lR : lL;
   const stance = stepSign > 0 ? lL : lR;
@@ -1401,6 +1558,7 @@ function posePlayer(a, t = 0) {
 // Standing still: breathing, a little arm sway; after a while it looks around and taps a foot.
 // On a boat or pad it balances with the arms out.
 function idlePose(dt) {
+  if (robot.kind === 'dog') return dogIdle();
   const [lL, lR] = robot.legs, [aL, aR] = robot.arms;
   const idle = P.idle ?? 0;
   const breathe = Math.sin(time * 2.4);
@@ -1418,10 +1576,14 @@ function idlePose(dt) {
 }
 
 function menuIdle() {
-  P.faceTarget = Math.PI * 0.86;
+  // the dog turns its side to us, so its long body reads
+  P.faceTarget = Math.PI * (robot.kind === 'dog' ? 0.68 : 0.86);
   const t = time % 5;
   const wave = t > 3.2 && t < 4.6 ? Math.sin(((t - 3.2) / 1.4) * Math.PI) : 0;
-  if (robot.arms[1]) {
+  if (robot.arms[1] && robot.kind === 'dog') {
+    // the dog gives a paw instead of waving
+    robot.arms[1].rotation.set(-wave * 1.1 + wave * Math.sin(time * 14) * 0.12, 0, 0);
+  } else if (robot.arms[1]) {
     robot.arms[1].rotation.z = wave * 2.5;
     robot.arms[1].rotation.x = 0;
     robot.arms[1].rotation.y = wave * Math.sin(time * 14) * 0.25;
@@ -1506,6 +1668,17 @@ const JET_SPEED = 4.2; // rows per second while cruising
 const JET_ROWS = Math.round(JET_TIME * JET_SPEED);
 const FLY_Y = 7.2;  // above the traffic and the monorail viaducts
 
+// faint bubble around the robot while the shield is charged
+const shieldBubble = new THREE.Mesh(new THREE.SphereGeometry(0.62, 16, 12), new THREE.MeshBasicMaterial({
+  color: 0x6dffb0, transparent: true, opacity: 0.13, depthWrite: false, blending: THREE.AdditiveBlending,
+}));
+shieldBubble.position.y = 0.62;
+shieldBubble.visible = false;
+robot.root.add(shieldBubble);
+const SHIELD_STEPS = 250;
+// what the shield can take: hits, not falls or the security drone
+const SHIELDED = new Set(['car', 'train', 'laser', 'scan', 'shock', 'beam', 'crane', 'mower', 'patrol']);
+
 const jetPack = M.makeJetpack();
 jetPack.position.set(0, 0.95, 0.17);
 jetPack.visible = false;
@@ -1517,6 +1690,19 @@ const thrusters = [];
 function attachThrusters() {
   for (const f of thrusters) f.parent?.remove(f);
   thrusters.length = 0;
+  if (robot.kind === 'dog') {
+    // the dog has a thruster under each paw
+    for (const leg of [...robot.arms, ...robot.legs]) {
+      for (const [w, c, h] of [[0.09, 0xffa21a, 0.22], [0.045, 0xfff1a8, 0.16]]) {
+        const f = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), new THREE.MeshBasicMaterial({ color: c }));
+        f.position.set(0, -0.06 - h / 2, 0);
+        f.visible = false;
+        leg.userData.foot.add(f);
+        thrusters.push(f);
+      }
+    }
+    return;
+  }
   for (const arm of robot.arms) {
     for (const [w, c, y] of [[0.09, 0x9ff3ff, -0.56], [0.05, 0xffffff, -0.54]]) {
       const f = new THREE.Mesh(new THREE.BoxGeometry(w, 0.22, w), new THREE.MeshBasicMaterial({ color: c }));
@@ -1538,45 +1724,66 @@ function attachThrusters() {
   }
 }
 attachThrusters();
-function onRobotRebuilt() { attachThrusters(); }
-
-function updateJetHud() {
-  const btn = $('jetbtn');
-  if (!btn) return;
-  btn.classList.toggle('hidden', !P.jet);
-  if (!P.jet) return;
-  btn.style.setProperty('--c', `${Math.round(P.jet.charge * 360)}deg`);
-  btn.classList.toggle('ready', P.jet.charge >= 1 && !P.fly);
+function onRobotRebuilt() {
+  robot.model.position.set(0, 0, 0);
+  robot.model.rotation.set(0, 0, 0);
+  attachThrusters();
+  placeJetpack();
+}
+// on the humanoids' backs; on the dog's spine, nozzles pointing down
+function placeJetpack() {
+  if (robot.kind === 'dog') { jetPack.position.set(0, 0.84, 0.08); jetPack.rotation.set(0, 0, 0); }
+  else { jetPack.position.set(0, 0.95, 0.17); jetPack.rotation.set(0, 0, 0); }
 }
 
-async function enterCenter() {
-  sfx.center();
+// Ability buttons stack in a column at the bottom right; each ring fills as it recharges.
+function updateJetHud() {
+  const jet = $('jetbtn'), sh = $('shieldbtn');
+  jet.classList.toggle('hidden', !P.jet);
   if (P.jet) {
-    // already trained in this run: just refuel
-    P.jet.charge = 1;
+    jet.style.setProperty('--c', `${Math.round(P.jet.charge * 360)}deg`);
+    jet.classList.toggle('ready', P.jet.charge >= 1 && !P.fly);
+  }
+  sh.classList.toggle('hidden', !P.guard);
+  if (P.guard) {
+    sh.style.setProperty('--c', `${Math.round(P.guard.charge * 360)}deg`);
+    sh.classList.toggle('ready', P.guard.charge >= 1);
+  }
+  shieldBubble.visible = !!P.guard && P.guard.charge >= 1;
+}
+
+async function enterStation(kind) {
+  sfx.center();
+  const has = kind === 'flight' ? P.jet : P.guard;
+  if (has) {
+    // already trained in this run: just refill
+    has.charge = 1;
     updateJetHud();
-    toast('ДЖЕТПАК ЗАПРАВЛЕН');
+    toast(kind === 'flight' ? 'ДЖЕТПАК ЗАПРАВЛЕН' : 'ЩИТ ЗАРЯЖЕН');
     saveRun();
     return;
   }
   state = 'mini';
-  // the training starts fresh: the security drone leaves and the street hums go quiet
+  // the task starts fresh: the security drone leaves and the street hums go quiet
   if (hunter) { scene.remove(hunter.mesh); hunter = null; }
   $('danger').style.opacity = 0;
   for (const h of ['patrol', 'scanner', 'water', 'hunter', 'jet']) sfx.hum(h, 0, 0);
   document.body.classList.add('in-mini');
-  const ok = await wiresGame(phone);
+  const ok = await (kind === 'flight' ? wiresGame : shieldGame)(phone);
   document.body.classList.remove('in-mini');
   state = 'play';
   P.idle = 0;
   last = performance.now();
-  if (ok) {
+  if (ok && kind === 'flight') {
     P.jet = { charge: 1 };
     jetPack.visible = true;
-    updateJetHud();
     toast('НАВЫК: ДЖЕТПАК');
-    haptic('success');
+  } else if (ok) {
+    P.guard = { charge: 1 };
+    toast('НАВЫК: ЭНЕРГОЩИТ');
   }
+  if (ok) haptic('success');
+  updateJetHud();
   saveRun();
 }
 
@@ -1670,14 +1877,17 @@ function updateFly(dt) {
   // legs together with boot thrusters; banks into turns
   const level = F.phase === 'land' ? Math.max(0, Math.min(1, F.y / FLY_Y)) : Math.min(1, F.t / 0.45);
   const [lL, lR] = robot.legs, [aL, aR] = robot.arms;
-  robot.model.rotation.x = -1.3 * level;
-  robot.model.position.set(0, 0.35 * level, 0.15 * level);
+  // Iron Man pose; the dog is level already, it only tucks its legs in
+  const flat = robot.kind === 'dog' ? 0 : level;
+  robot.model.rotation.x = -1.3 * flat;
+  robot.model.position.set(0, 0.35 * flat, 0.15 * flat);
   robot.root.rotation.z = (F.tx - F.x) * -0.45;
   if (lL) { lL.rotation.set(0.05 * level, 0, -0.03); lL.userData.knee && (lL.userData.knee.rotation.x = -0.1 * level); }
   if (lR) { lR.rotation.set(0.05 * level, 0, 0.03); lR.userData.knee && (lR.userData.knee.rotation.x = -0.15 * level); }
   if (aL) aL.rotation.set(0.15 * level, 0, -0.22 * level);
   if (aR) aR.rotation.set(0.15 * level, 0, 0.22 * level);
-  robot.head.rotation.set(1.0 * level, 0, 0);
+  robot.head.rotation.set(1.0 * flat, 0, 0);
+  if (robot.kind === 'dog') dogFly(level);
   robot.body.scale.set(1, 1, 1);
   for (const f of jetPack.userData.flames) f.scale.y = 0.7 + Math.random() * 0.6;
   for (const f of thrusters) { f.visible = true; f.scale.y = 0.6 + Math.random() * 0.7; }
@@ -1760,7 +1970,21 @@ function updateParticles(dt) {
 }
 
 function die(kind, dir = 1) {
-  if (!P.alive || window.rc?.god) return;
+  // nothing on the street can touch a robot flying over it
+  if (!P.alive || window.rc?.god || P.fly) return;
+  if (P.shield > 0 && SHIELDED.has(kind)) return;
+  if (P.guard && P.guard.charge >= 1 && SHIELDED.has(kind)) {
+    // the shield breaks instead of the robot; a moment of safety to get away
+    P.guard.charge = 0;
+    P.shield = 1.6;
+    const pos = robot.root.position;
+    burst(pos.x, 0.7, pos.z, [0x6dffb0, 0xffffff, 0x35e6ff], 22, 4);
+    sfx.shock();
+    haptic('heavy');
+    toast('ЩИТ СПАС!');
+    updateJetHud();
+    return;
+  }
   clearRun();
   P.alive = false;
   P.hop = null;
@@ -1937,12 +2161,19 @@ const camTarget = new THREE.Vector3();
 
 function updateCamera(dt) {
   const vis = -robot.root.position.z;
+  // Waiting on a sidewalk for a gap in the traffic (or a boat) is part of the game: there the
+  // camera does not push past the robot and the idle timer runs much slower.
+  const ahead = lanes.get(P.row + 1)?.type;
+  const waiting = state === 'play' && P.alive && !P.fly && lanes.get(P.row)?.type === 'safe' && WAIT_FOR.has(ahead);
   if (state === 'play') camRow += (0.28 + Math.min(score / 250, 0.5)) * dt;
+  if (waiting) camRow = Math.min(camRow, vis + 0.3);
   if (P.alive && vis > camRow) camRow += (vis - camRow) * Math.min(1, dt * (P.fly ? 9 : 3));
+  // after a death the camera comes back to the robot, so a grab by the drone is always seen
+  if (state === 'dead' || state === 'over') camRow += (vis - camRow) * Math.min(1, dt * 2.5);
   // Standing still or falling behind the camera calls the security drone.
-  if (state === 'play' && P.alive) P.idle = P.hop || P.fly ? 0 : (P.idle ?? 0) + dt;
+  if (state === 'play' && P.alive) P.idle = P.hop || P.fly ? 0 : (P.idle ?? 0) + dt * (waiting ? 0.5 : 1);
   const threat = state === 'play' && P.alive
-    ? clamp(Math.max((camRow - vis - 1.8) / 2.4, ((P.idle ?? 0) - 4) / 3.5), 0, 1) : 0;
+    ? clamp(Math.max((camRow - vis - 1.2) / 1.8, ((P.idle ?? 0) - 4) / 3.5), 0, 1) : 0;
   // the drone only lives while the game runs: a frozen frame (pause) never moves or grabs
   if (!paused) {
     updateHunter(dt, threat);
@@ -1980,10 +2211,11 @@ function updateCamera(dt) {
     if (state === 'intro') { want = chasePos; look = chaseLook; }
     else if (close) {
       const t = Math.tan(THREE.MathUtils.degToRad(GARAGE_FIT.fov / 2));
-      const d = GARAGE_FIT.height / (2 * GARAGE_FIT.share * t);
+      const d = (robot.kind === 'dog' ? 1.05 : GARAGE_FIT.height) / (2 * GARAGE_FIT.share * t);
       const below = d * GARAGE_FIT.shift * 2 * t; // aim this far below the robot's middle
-      want = menuPos.set(rp.x + d * 0.08, 0.62, rp.z + d);
-      look = menuLook.set(rp.x, 0.62 - below, rp.z);
+      const mid = robot.kind === 'dog' ? 0.45 : 0.62;
+      want = menuPos.set(rp.x + d * 0.08, mid, rp.z + d);
+      look = menuLook.set(rp.x, mid - below, rp.z);
     } else {
       want = menuPos.set(rp.x + 0.4, 0.95, rp.z + 2.3);
       look = menuLook.set(rp.x + 0.06, 0.5, rp.z);
@@ -2098,7 +2330,7 @@ async function renderOverBoard(board) {
 function saveRun(cloud = false) {
   if (state !== 'play' || !P.alive || P.row <= 0 || window.rc?.god) return;
   const lane = lanes.get(P.row);
-  if (lane && lane.type === 'safe' && !P.hop) checkpoint = { seed: runSeed, row: P.row, x: Math.round(P.x), score, phase: env.phase, jet: P.jet ? P.jet.charge : null, t: Date.now() };
+  if (lane && lane.type === 'safe' && !P.hop) checkpoint = { seed: runSeed, row: P.row, x: Math.round(P.x), score, phase: env.phase, jet: P.jet ? P.jet.charge : null, guard: P.guard ? P.guard.charge : null, t: Date.now() };
   if (!checkpoint) return;
   const data = JSON.stringify(checkpoint);
   store.set('run', data, cloud);
@@ -2139,7 +2371,9 @@ function newWorld(save = null) {
     let x = clamp(save.x, -HALF, HALF);
     if (lane.blocked.has(x)) x = freeCells(lane).sort((a, b) => Math.abs(a - x) - Math.abs(b - x))[0] ?? 0;
     Object.assign(P, { row, z: -row, x, face: 0, faceTarget: 0 });
-    if (save.jet != null) { P.jet = { charge: save.jet }; jetPack.visible = true; updateJetHud(); }
+    if (save.jet != null) { P.jet = { charge: save.jet }; jetPack.visible = true; }
+    if (save.guard != null) P.guard = { charge: save.guard };
+    updateJetHud();
     if (lane.info.center) lane.used = true;
     robot.root.position.set(x, 0, -row);
     camRow = row;
@@ -2286,6 +2520,7 @@ const ICON_HEAD = '<path fill="#4a4e6a" d="M3 6h8v7H3z"/><path fill="#f4f6ff" d=
 const ICONS = {
   'model:rr': '<path fill="#1a1b21" d="M3 2h8v8H3z"/><path fill="#3a3b46" d="M2 4h1v4H2zM11 4h1v4h-1z"/><path fill="#f4f6ff" d="M5 5h1v2H5zM8 5h1v2H8z"/><path fill="#d9dce4" d="M4 10h6v4H4z"/><path fill="#d6a124" d="M6 11h2v2H6z"/>',
   'model:titan': '<path fill="#8e93a3" d="M3 2h8v8H3z"/><path fill="#c8ccd6" d="M3 2h8v2H3zM5 8h4v2H5z"/><path fill="#1c1d24" d="M3 5h8v2H3z"/><path fill="#e8faff" d="M4 5h2v1H4zM8 5h2v1H8z"/><path fill="#c8ccd6" d="M4 10h6v4H4z"/><path fill="#e0202c" d="M6 11h2v2H6z"/>',
+  'model:dog': '<path fill="#d4d7e2" d="M2 4h10v3H2z"/><path fill="#1c1d24" d="M2 4h2v3H2zM6 4h3v1H6z"/><path fill="#ffd21f" d="M2 5h1v1H2z"/><path fill="#8aff5a" d="M8 6h1v1H8z"/><path fill="#3a3c48" d="M3 7h1v1H3zM10 7h1v1h-1z"/><path fill="#d4d7e2" d="M2 8h1v3H2zM4 8h1v3H4zM9 8h1v3H9zM11 8h1v3h-1z"/><path fill="#1c1d24" d="M2 11h2v1H2zM4 11h2v1H4zM8 11h2v1H8zM11 11h2v1h-2z"/>',
   'acc:none': ICON_HEAD,
   'acc:antenna': ICON_HEAD + '<path fill="#8a90a4" d="M9 2h1v4H9z"/><path fill="#35e6ff" d="M8 0h3v2H8z"/>',
   'acc:shades': ICON_HEAD + '<path fill="#15161c" d="M2 8h10v2H2z"/><path fill="#35e6ff" d="M3 8h3v1H3zM8 8h3v1H8z"/>',
@@ -2305,10 +2540,49 @@ const TAB_ICONS = {
   body: '<path fill="#d9dce4" d="M2 1h8v8H2z"/><path fill="#a8acb8" d="M0 1h2v6H0zM10 1h2v6h-2zM2 7h8v2H2z"/><path fill="#5a5e70" d="M4 9h4v3H4z"/>',
   accent: '<path fill="#ffd21f" d="M5 0h2v2h1v2h1v5H8v2H4V9H3V4h1V2h1z"/><path fill="#fff6c0" d="M4 5h1v3H4z"/>',
   trim: '<path fill="#8a90a4" d="M3 0h6v2h2v2h1v4h-1v2H9v2H3v-2H1V8H0V4h1V2h2z"/><path fill="#1a1c3a" d="M4 4h4v4H4z"/>',
+  scheme: '<path fill="#d9dce4" d="M1 1h10v10H1z"/><path fill="#ff2ec8" d="M1 1h5v5H1z"/><path fill="#14e4ff" d="M6 6h5v5H6z"/><path fill="#1a1c3a" d="M6 1h5v5H6z"/>',
   eyes: '<path fill="#f4f6ff" d="M2 3h8v1h2v4h-2v1H2V8H0V4h2z"/><path fill="#35e6ff" d="M4 4h4v4H4z"/><path fill="#1a1c3a" d="M5 5h2v2H5z"/>',
   acc: '<path fill="#ffc83a" d="M0 3h2v2h1V2h2v2h2V2h2v3h1V3h2v8H0z"/><path fill="#ff3a5a" d="M5 6h2v2H5z"/>',
 };
 const svgUrl = (body, size) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges">${body}</svg>`)}`;
+// Robot cards show a real 3D render of that robot in its own garage look (cached per look).
+let thumbRenderer = null;
+const thumbCache = new Map();
+// preview: a look item to show on it ({ cat, id }); focus 'head' frames the head closely
+function robotThumb(kind, preview = null, focus = 'body') {
+  const sig = `${kind}|${focus}|${JSON.stringify(preview)}|${JSON.stringify(G.garage.looks[kind] ?? {})}`;
+  if (thumbCache.has(sig)) return thumbCache.get(sig);
+  if (!thumbRenderer) {
+    thumbRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    thumbRenderer.setSize(240, 192);
+    thumbRenderer.outputColorSpace = THREE.SRGBColorSpace;
+  }
+  const r = M.makeRobot({}, kind);
+  G.applyLook(r, preview ? { ...preview, model: kind } : { cat: 'model', id: kind });
+  r.acc?.userData.tick?.(0.3);
+  if (r.rainbow) r.mats.eyes.color.setHSL(0.85, 1, 0.6);
+  const sc = new THREE.Scene();
+  sc.add(new THREE.HemisphereLight(0xe8ecff, 0x40425a, 2.4));
+  const key = new THREE.DirectionalLight(0xffffff, 1.7);
+  key.position.set(-2, 3, -3);
+  sc.add(key, r.root);
+  r.root.updateMatrixWorld(true);
+  // three-quarter view from the front left (the dog more from the side), framed by its bounds
+  const box = new THREE.Box3().setFromObject(focus === 'head' ? r.head : r.root);
+  const c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
+  const half = focus === 'head' ? Math.max(size.x, size.y, size.z) * 0.8
+    : kind === 'dog' ? Math.max(size.y, size.z) * 0.6 : size.y * 0.54;
+  const cam = new THREE.OrthographicCamera(-half * 1.25, half * 1.25, half, -half, 0.1, 20);
+  const dir = kind === 'dog' && focus !== 'head' ? new THREE.Vector3(-1, 0.55, -0.75) : new THREE.Vector3(-0.55, 0.3, -1);
+  cam.position.copy(c).addScaledVector(dir.normalize(), 6);
+  cam.lookAt(c);
+  thumbRenderer.render(sc, cam);
+  const url = thumbRenderer.domElement.toDataURL('image/png');
+  sc.traverse((o) => o.geometry?.dispose());
+  thumbCache.set(sig, url);
+  return url;
+}
+
 const iconUrl = (key) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14" shape-rendering="crispEdges">${ICONS[key]}</svg>`)}`;
 const hex = (c) => `#${c.toString(16).padStart(6, '0')}`;
 const COIN = '<i class="coin-ico"></i>';
@@ -2335,7 +2609,11 @@ function renderGarage() {
     const b = document.createElement('button');
     b.className = (on && !trying ? 'on ' : '') + (trying ? 'preview ' : '') + (own ? '' : 'locked');
     const key = `${cat.id}:${it.id}`;
-    const pic = ICONS[key] ? `<img src="${iconUrl(key)}" alt="">` : `<span class="sw" style="background:${hex(it.color ?? 0x2a2c52)}"></span>`;
+    // robots, schemes and head items are shown as 3D renders of the robot on screen
+    const pic = cat.id === 'model' ? `<img class="thumb" src="${robotThumb(it.id)}" alt="">`
+      : cat.id === 'scheme' ? `<img class="thumb" src="${robotThumb(shownModel, { cat: 'scheme', id: it.id })}" alt="">`
+      : cat.id === 'acc' ? `<img class="thumb" src="${robotThumb(shownModel, { cat: 'acc', id: it.id }, 'head')}" alt="">`
+      : ICONS[key] ? `<img src="${iconUrl(key)}" alt="">` : `<span class="sw" style="background:${it.id === 'rainbow' ? 'linear-gradient(135deg,#ff3a5a,#ffe100,#30d860,#2a8bff,#a04dff)' : hex(it.color ?? 0x2a2c52)}"></span>`;
     const st = on ? '<span class="st on">НАДЕТО</span>' : own ? '<span class="st own">ЕСТЬ</span>' : `<span class="st">${COIN}${it.price}</span>`;
     b.innerHTML = `<span class="pic">${pic}</span><span class="nm">${it.name}</span>${st}`;
     b.onclick = () => {
@@ -2384,6 +2662,10 @@ $('garage-buy').addEventListener('click', () => {
   renderGarage();
 });
 $('jetbtn').addEventListener('click', () => useJet());
+$('shieldbtn').addEventListener('click', () => {
+  if (!P.guard) return;
+  toast(P.guard.charge >= 1 ? 'ЩИТ ГОТОВ: СПАСЁТ ОТ УДАРА' : `ЩИТ: ${Math.round(P.guard.charge * 100)}%`);
+});
 $('pausebtn').addEventListener('click', () => { if (state === 'play' && P.alive) setPause(true); });
 $('resume').addEventListener('click', () => { setPause(false); sfx.unlock(); sfx.click(); });
 $('newrun').addEventListener('click', () => { setPause(false); clearRun(); newWorld(); });
@@ -2457,7 +2739,9 @@ function frame(now) {
   updateDeath(dt);
   updateParticles(dt);
   updateStreaks(dt);
-  if (robot.acc?.userData.spin) robot.acc.userData.spin.rotation.y += Math.max(dt, 0.016) * 14;
+  // animated head items (propeller, siren, radar, ...) and rainbow eyes run even in menus
+  robot.acc?.userData.tick?.(performance.now() / 1000);
+  if (robot.rainbow) robot.mats.eyes.color.setHSL((performance.now() / 4000) % 1, 1, 0.6);
   updateCamera(dt);
   updateWarnings();
   updateSkyCars(dt);
