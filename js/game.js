@@ -1566,6 +1566,7 @@ function dogFly(level) {
 }
 
 function posePlayer(a, t = 0) {
+  if (robot.anim) return robot.anim.step(t, stepSign);
   if (robot.kind === 'dog') return dogStep(t);
   const [lL, lR] = robot.legs, [aL, aR] = robot.arms;
   const swing = stepSign > 0 ? lR : lL;
@@ -1593,6 +1594,7 @@ function posePlayer(a, t = 0) {
 // Standing still: breathing, a little arm sway; after a while it looks around and taps a foot.
 // On a boat or pad it balances with the arms out.
 function idlePose(dt) {
+  if (robot.anim) return robot.anim.idle(time, P.idle ?? 0, !!P.plat, dt);
   if (robot.kind === 'dog') return dogIdle();
   const [lL, lR] = robot.legs, [aL, aR] = robot.arms;
   const idle = P.idle ?? 0;
@@ -1610,11 +1612,15 @@ function idlePose(dt) {
   robot.head.rotation.y = idle > 1.5 ? Math.sin((idle - 1.5) * 1.6) * 0.5 : 0;
 }
 
+// how far each robot turns to us in the menu (the long ones show their side)
+const MENU_FACE = { dog: 0.68, hexa: 0.74, track: 0.78 };
 function menuIdle() {
   // the dog turns its side to us, so its long body reads
-  P.faceTarget = Math.PI * (robot.kind === 'dog' ? 0.68 : 0.86);
+  P.faceTarget = Math.PI * (MENU_FACE[robot.kind] ?? 0.86);
   const t = time % 5;
   const wave = t > 3.2 && t < 4.6 ? Math.sin(((t - 3.2) / 1.4) * Math.PI) : 0;
+  // robots with their own poses greet in their own way (a claw, a leg, a head shake)
+  if (robot.anim?.menu) return robot.anim.menu(time, wave);
   if (robot.arms[1] && robot.kind === 'dog') {
     // the dog gives a paw instead of waving
     robot.arms[1].rotation.set(-wave * 1.1 + wave * Math.sin(time * 14) * 0.12, 0, 0);
@@ -1725,6 +1731,19 @@ const thrusters = [];
 function attachThrusters() {
   for (const f of thrusters) f.parent?.remove(f);
   thrusters.length = 0;
+  if (robot.thrust) {
+    // robots without feet: flame cones under the wheel, the tracks, the ball, the body
+    for (const at of robot.thrust) {
+      for (const [w, c, h] of [[0.12, 0xffa21a, 0.26], [0.06, 0xfff1a8, 0.18]]) {
+        const f = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.6, 0, h, 10), new THREE.MeshBasicMaterial({ color: c }));
+        f.position.set(0, -h / 2, 0);
+        f.visible = false;
+        at.add(f);
+        thrusters.push(f);
+      }
+    }
+    return;
+  }
   if (robot.kind === 'dog') {
     // the dog has a thruster under each paw
     for (const leg of [...robot.arms, ...robot.legs]) {
@@ -1769,6 +1788,13 @@ function onRobotRebuilt() {
 // a back item (backpack, battery, ...) pushes the jetpack outwards so they do not overlap
 function placeJetpack() {
   const depth = robot.backDepth ?? 0;
+  if (robot.jet) {
+    // the new robots say where it goes: upright on the back, or lying on top (hexapod)
+    const j = robot.jet;
+    if (j.lying) { jetPack.position.set(0, j.y + depth, j.z); jetPack.rotation.set(-Math.PI / 2 + 0.3, 0, 0); }
+    else { jetPack.position.set(0, j.y, j.z + depth); jetPack.rotation.set(0, 0, 0); }
+    return;
+  }
   // the dog carries it lying along the spine, nozzles pointing back and a little down
   if (robot.kind === 'dog') {
     jetPack.position.set(0, 0.75 + depth, 0.1);
@@ -1921,7 +1947,7 @@ function updateFly(dt) {
   const level = F.phase === 'land' ? Math.max(0, Math.min(1, F.y / FLY_Y)) : Math.min(1, F.t / 0.45);
   const [lL, lR] = robot.legs, [aL, aR] = robot.arms;
   // Iron Man pose; the dog is level already, it only tucks its legs in
-  const flat = robot.kind === 'dog' ? 0 : level;
+  const flat = robot.kind === 'dog' || robot.anim ? 0 : level;
   robot.model.rotation.x = -1.3 * flat;
   robot.model.position.set(0, 0.35 * flat, 0.15 * flat);
   robot.root.rotation.z = (F.tx - F.x) * -0.45;
@@ -1931,6 +1957,7 @@ function updateFly(dt) {
   if (aR) aR.rotation.set(0.15 * level, 0, 0.22 * level);
   robot.head.rotation.set(1.0 * flat, 0, 0);
   if (robot.kind === 'dog') dogFly(level);
+  if (robot.anim) robot.anim.fly(level, time);
   robot.body.scale.set(1, 1, 1);
   for (const f of jetPack.userData.flames) f.scale.y = 0.7 + Math.random() * 0.6;
   for (const f of thrusters) { f.visible = true; f.scale.y = 0.6 + Math.random() * 0.7; }
@@ -2198,6 +2225,8 @@ let menuView = 'main';
 // garage framing: robot height to fit (with a hat), its share of the screen height, and how far
 // above the screen middle it stands (the shop sheet covers the lower 54 %)
 const GARAGE_FIT = { height: 1.5, share: 0.28, shift: 0.23, fov: 50 };
+// height to fit and the point to aim at, per robot (the others use the fit above)
+const GARAGE_SIZE = { dog: [1.05, 0.45], uni: [1.5, 0.66], track: [1.0, 0.44], hexa: [0.9, 0.38], rolly: [1.2, 0.52] };
 let garageK = 0;
 let introAt = 0;
 const camTarget = new THREE.Vector3();
@@ -2254,9 +2283,9 @@ function updateCamera(dt) {
     if (state === 'intro') { want = chasePos; look = chaseLook; }
     else if (close) {
       const t = Math.tan(THREE.MathUtils.degToRad(GARAGE_FIT.fov / 2));
-      const d = (robot.kind === 'dog' ? 1.05 : GARAGE_FIT.height) / (2 * GARAGE_FIT.share * t);
+      const [fitH, mid] = GARAGE_SIZE[robot.kind] ?? [GARAGE_FIT.height, 0.62];
+      const d = fitH / (2 * GARAGE_FIT.share * t);
       const below = d * GARAGE_FIT.shift * 2 * t; // aim this far below the robot's middle
-      const mid = robot.kind === 'dog' ? 0.45 : 0.62;
       want = menuPos.set(rp.x + d * 0.08, mid, rp.z + d);
       look = menuLook.set(rp.x, mid - below, rp.z);
     } else {
@@ -2622,10 +2651,11 @@ function robotThumb(kind, preview = null, focus = 'body') {
   const c = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
   const half = close ? Math.max(0.3, Math.max(size.x, size.y, size.z) * 0.62)
     : focus === 'head' ? Math.max(size.x, size.y, size.z) * 0.8
-    : kind === 'dog' ? Math.max(size.y, size.z) * 0.6 : size.y * 0.54;
+    : kind === 'dog' ? Math.max(size.y, size.z) * 0.6 : Math.max(size.y * 0.54, Math.max(size.x, size.z) * 0.42);
   const cam = new THREE.OrthographicCamera(-half * 1.25, half * 1.25, half, -half, 0.1, 20);
-  const dir = focus === 'back' ? (kind === 'dog' ? new THREE.Vector3(-1, 1.1, 0.7) : new THREE.Vector3(-0.7, 0.35, 1))
-    : kind === 'dog' && focus !== 'head' ? new THREE.Vector3(-1, 0.55, -0.75) : new THREE.Vector3(-0.55, 0.3, -1);
+  const low = kind === 'dog' || kind === 'hexa' || kind === 'track'; // seen more from the side and above
+  const dir = focus === 'back' ? (low ? new THREE.Vector3(-1, 1.1, 0.7) : new THREE.Vector3(-0.7, 0.35, 1))
+    : low && focus !== 'head' ? new THREE.Vector3(-1, 0.55, -0.75) : new THREE.Vector3(-0.55, 0.3, -1);
   cam.position.copy(c).addScaledVector(dir.normalize(), 6);
   cam.lookAt(c);
   thumbRenderer.render(sc, cam);
@@ -2675,7 +2705,10 @@ let isOwner = false;
 function renderGarage() {
   $('garage-coins').textContent = coins;
   $('garage-tabs').innerHTML = '';
+  const tabModel = tryOn?.model ?? G.garage.model;
+  if (!G.hasSlot(tabModel, garageTab)) garageTab = 'model';
   for (const c of G.CATEGORIES) {
+    if (!G.hasSlot(tabModel, c.id)) continue;
     const b = document.createElement('button');
     // the dog has modules instead of hands
     const name = c.dogName && (tryOn?.model ?? G.garage.model) === 'dog' ? c.dogName : c.name;
@@ -2878,6 +2911,7 @@ function frame(now) {
   updateStreaks(dt);
   // animated head items (propeller, siren, radar, ...) and rainbow eyes run even in menus
   for (const tick of robot.ticks ?? []) tick(performance.now() / 1000);
+  robot.anim?.tick?.(performance.now() / 1000);
   placeJetpack();
   if (robot.rainbow) robot.mats.eyes.color.setHSL((performance.now() / 4000) % 1, 1, 0.6);
   updateCamera(dt);

@@ -135,6 +135,8 @@ export const PAL = { white: 0xd9dce4, light: 0xbfc3cf, dark: 0x2a2b33, black: 0x
 const PAL_TITAN = { white: 0xd2d5de, light: 0x8e93a3, dark: 0x3a3c46, black: 0x1a1b22, yellow: 0xe8202c };
 // Third robot "Dog": a four-legged patrol robot, light body with a dark spine stripe.
 const PAL_DOG = { white: 0xd4d7e2, light: 0x9a9eae, dark: 0x3a3c48, black: 0x1c1d24, yellow: 0xff3a3a };
+// the new robots: the Agibot's light body and dark parts, each with its own accent
+const PAL_NEW = { uni: 0xff6a00, hexa: 0x30d860, rolly: 0x14b8b0, track: 0xffc21a };
 
 export function makeRobot(colors = {}, kind = 'rr') {
   const root = new THREE.Group();  // position + facing (game controlled)
@@ -152,12 +154,12 @@ export function makeRobot(colors = {}, kind = 'rr') {
 export function rebuildRobot(robot, kind) {
   for (const o of robot.parts) robot.model.remove(o);
   // anchors the new body does not have are cleared (only the dog has a neck, tail and paws)
-  Object.assign(robot, { neck: null, tail: null, paws: null, motors: null }, buildRobot(robot.model, {}, kind), { kind, acc: null, items: [] });
+  Object.assign(robot, { neck: null, tail: null, paws: null, motors: null, anim: null, thrust: null, jet: null }, buildRobot(robot.model, {}, kind), { kind, acc: null, items: [] });
 }
 
 function buildRobot(model, colors, kind) {
   const before = new Set(model.children);
-  const C = { ...(kind === 'titan' ? PAL_TITAN : kind === 'dog' ? PAL_DOG : PAL), ...colors };
+  const C = { ...(kind === 'titan' ? PAL_TITAN : kind === 'dog' ? PAL_DOG : PAL), ...(PAL_NEW[kind] ? { yellow: PAL_NEW[kind] } : {}), ...colors };
   const mats = {
     body: new THREE.MeshLambertMaterial({ color: C.white }),
     shade: new THREE.MeshLambertMaterial({ color: C.light }),
@@ -167,7 +169,7 @@ function buildRobot(model, colors, kind) {
     eyes: new THREE.MeshBasicMaterial({ color: 0xf4f6ff }),
     dot: new THREE.MeshBasicMaterial({ color: kind === 'titan' ? 0xff3a3a : 0xe8893a }),
   };
-  const r = ({ titan: buildTitan, dog: buildDog }[kind] ?? buildRR)(model, mats);
+  const r = ({ titan: buildTitan, dog: buildDog, uni: buildUni, hexa: buildHexa, rolly: buildRolly, track: buildTrack }[kind] ?? buildRR)(model, mats);
   // the static boxes of each limb are merged per material (a robot is ~100 boxes); the eyes
   // blink, so they stay apart. Only the new body is merged, not what else hangs on the model.
   for (const e of r.eyes) e.userData.keep = true;
@@ -288,7 +290,10 @@ function dogLeg(model, mats, x, z, thigh, a, shin, b) {
 }
 
 // Pixel digits for the "02" on the dog's head (3x5 cells, drawn as small boxes).
-const DIGITS = { 0: ['111', '101', '101', '101', '111'], 2: ['111', '001', '111', '100', '111'] };
+const DIGITS = {
+  0: ['111', '101', '101', '101', '111'], 2: ['111', '001', '111', '100', '111'],
+  4: ['101', '101', '111', '001', '001'], 7: ['111', '001', '010', '010', '010'],
+};
 function digits(p, text, x, y, z, cell, mat, side) {
   [...text].forEach((ch, k) => DIGITS[ch].forEach((row, r) => [...row].forEach((c, i) => {
     if (c === '1') box(p, 0.006, cell, cell, mat, x, y - r * cell, z + side * (k * 4 + i) * cell);
@@ -465,6 +470,556 @@ function buildTitan(model, mats) {
   box(head, 0.1, 0.03, 0.022, D, 0, 0.02, -0.117);                // chin
   // attachment points for hand and back items (back: +z points out of the back)
   return { legs, arms, head, eyes, hands: arms.map((a) => a.userData.hand), back: anchor(model, 0, 1.07, 0.12) };
+}
+
+// ---------------------------------------------------------------- robots that do not walk
+// Unicycle, hexapod, rolling ball and tracks. Besides the usual parts each one returns an `anim`
+// with its own poses (step / idle / fly / menu), `thrust` anchors for the flight flames (cones
+// pointing down) and `jet`: where the jetpack sits ({ y, z, lying }).
+function cyl(p, rt, rb, h, m, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, n = 16) {
+  const material = typeof m === 'object' ? m : mat(m);
+  const o = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, n), material);
+  o.position.set(x, y, z);
+  o.rotation.set(rx, ry, rz);
+  o.castShadow = !material.isMeshBasicMaterial;
+  p.add(o);
+  return o;
+}
+const grp = (p, x = 0, y = 0, z = 0) => { const g = new THREE.Group(); g.position.set(x, y, z); p.add(g); return g; };
+const own = (c) => new THREE.MeshBasicMaterial({ color: c }); // lights that pulse get their own material
+const keep = (o) => { o.userData.keep = true; return o; };
+// a rounded rectangle (track loops)
+function rrShape(w, h, r, path = new THREE.Shape()) {
+  const x = -w / 2, y = -h / 2;
+  path.moveTo(x + r, y); path.lineTo(x + w - r, y); path.quadraticCurveTo(x + w, y, x + w, y + r);
+  path.lineTo(x + w, y + h - r); path.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  path.lineTo(x + r, y + h); path.quadraticCurveTo(x, y + h, x, y + h - r);
+  path.lineTo(x, y + r); path.quadraticCurveTo(x, y, x + r, y);
+  return path;
+}
+// progress of a step since the last frame (the anims turn wheels by the distance travelled)
+function stepper() {
+  let last = 0;
+  return (t) => { const d = t >= last ? t - last : t; last = t >= 1 ? 0 : t; return d; };
+}
+
+// Юни: a unicycle robot. Square side covers on a squat tyre, a boxy frame and torso with accent
+// plates, arms like the Agibot's, a wide head with a black visor.
+function buildUni(model, mats) {
+  const W = mats.body, L = mats.shade, D = mats.dark, B = mats.black, Y = mats.accent;
+  const RUB = mat(0x1b1b1f), red = mat(0xff3a2a, true), amber = mat(0xffa21a, true), white = mat(0xf2f4fa, true);
+  const AX = 0.25, R = 0.245;
+  const wheel = grp(model, 0, AX, 0);
+  cyl(wheel, R, R, 0.15, RUB, 0, 0, 0, 0, 0, Math.PI / 2, 28);
+  for (let i = 0; i < 24; i++) { const a = i / 24 * Math.PI * 2; box(wheel, 0.16, 0.022, 0.05, RUB, 0, Math.cos(a) * 0.252, Math.sin(a) * 0.252).rotation.x = a; }
+  cyl(wheel, 0.15, 0.15, 0.152, D, 0, 0, 0, 0, 0, Math.PI / 2, 20);
+  // the body sways round the axle: square side covers with bolts and a light, the frame arms
+  const body = grp(model, 0, AX, 0);
+  for (const s of [-1, 1]) {
+    box(body, 0.03, 0.3, 0.3, L, s * 0.095, 0, 0);
+    box(body, 0.034, 0.2, 0.2, W, s * 0.1, 0, 0);
+    box(body, 0.036, 0.04, 0.304, Y, s * 0.1, -0.11, 0);
+    box(body, 0.036, 0.012, 0.304, D, s * 0.1, 0.11, 0);
+    box(body, 0.04, 0.07, 0.07, D, s * 0.105, 0, 0);
+    box(body, 0.044, 0.03, 0.03, B, s * 0.108, 0, 0);
+    for (const [y, z] of [[0.07, 0.07], [0.07, -0.07], [-0.07, 0.07], [-0.07, -0.07]]) box(body, 0.04, 0.018, 0.018, D, s * 0.104, y, z);
+    box(body, 0.042, 0.02, 0.03, red, s * 0.107, 0.08, -0.12);
+    box(body, 0.05, 0.26, 0.12, D, s * 0.1, 0.22, 0);
+    box(body, 0.052, 0.03, 0.122, L, s * 0.1, 0.3, 0);
+    cyl(body, 0.012, 0.012, 0.16, L, s * 0.1, 0.2, 0.075, 0, 0, 0, 8);
+    cyl(body, 0.018, 0.018, 0.06, D, s * 0.1, 0.27, 0.075, 0, 0, 0, 8);
+  }
+  // housing over the tyre with an amber running light and side vents, waist
+  box(body, 0.25, 0.1, 0.24, D, 0, 0.34, 0);
+  box(body, 0.252, 0.03, 0.242, Y, 0, 0.31, 0);
+  box(body, 0.08, 0.02, 0.01, amber, 0, 0.35, -0.122);
+  for (const s of [-1, 1]) for (let i = 0; i < 3; i++) box(body, 0.006, 0.01, 0.15, B, s * 0.126, 0.33 + i * 0.02, 0);
+  box(body, 0.17, 0.08, 0.15, B, 0, 0.43, 0);
+  box(body, 0.2, 0.03, 0.16, L, 0, 0.47, 0);
+  // torso: light box, shaded sides with the number, accent chest plates, black chest panel
+  const torso = grp(body, 0, 0.62, 0);
+  box(torso, 0.34, 0.26, 0.22, W, 0, 0, 0);
+  box(torso, 0.342, 0.03, 0.222, L, 0, -0.1, 0);
+  for (const s of [-1, 1]) {
+    box(torso, 0.03, 0.26, 0.222, L, s * 0.155, 0, 0);
+    digits(torso, '07', s * 0.172, 0.06, s < 0 ? -0.04 : 0.04, 0.014, B, -s);
+    box(torso, 0.09, 0.08, 0.02, Y, s * 0.09, 0.05, -0.115);
+    box(torso, 0.006, 0.08, 0.022, D, s * 0.09, 0.05, -0.116);
+    box(torso, 0.05, 0.05, 0.02, D, s * 0.09, -0.06, -0.113);
+  }
+  box(torso, 0.07, 0.13, 0.02, B, 0, 0, -0.115);
+  for (let i = 0; i < 4; i++) box(torso, 0.05, 0.012, 0.022, D, 0, -0.04 + i * 0.026, -0.116);
+  box(torso, 0.025, 0.025, 0.022, amber, 0, 0.09, -0.116);
+  box(torso, 0.22, 0.16, 0.05, L, 0, 0.01, 0.13);
+  for (let i = 0; i < 3; i++) box(torso, 0.18, 0.012, 0.01, D, 0, -0.03 + i * 0.03, 0.157);
+  box(torso, 0.04, 0.02, 0.01, red, 0.07, 0.06, 0.157);
+  box(torso, 0.09, 0.04, 0.09, D, 0, 0.15, 0);
+  // arms like the Agibot's: dark joint, accent cap, light arm, elbow, forearm, black hand
+  const arms = [-1, 1].map((s) => {
+    const sh = grp(torso, s * 0.2, 0.09, 0);
+    box(sh, 0.06, 0.1, 0.12, D, -s * 0.01, 0, 0);
+    box(sh, 0.12, 0.08, 0.14, Y, s * 0.035, 0.03, 0);
+    box(sh, 0.122, 0.015, 0.142, D, s * 0.035, 0.06, 0);
+    box(sh, 0.1, 0.12, 0.11, W, s * 0.035, -0.1, 0);
+    box(sh, 0.08, 0.04, 0.09, D, s * 0.035, -0.18, 0);
+    box(sh, 0.1, 0.1, 0.11, W, s * 0.035, -0.25, 0);
+    box(sh, 0.025, 0.1, 0.112, L, s * 0.075, -0.25, 0);
+    box(sh, 0.07, 0.03, 0.08, D, s * 0.035, -0.315, 0);
+    box(sh, 0.1, 0.08, 0.11, B, s * 0.035, -0.36, 0);
+    box(sh, 0.102, 0.015, 0.112, Y, s * 0.035, -0.33, 0);
+    for (const z of [-0.035, 0.035]) box(sh, 0.03, 0.05, 0.03, D, s * 0.035, -0.42, z);
+    sh.userData.hand = anchor(sh, s * 0.035, -0.36, 0);
+    return sh;
+  });
+  // head: wide light box, accent cap, black visor with white eyes, ear blocks with lights
+  const head = grp(torso, 0, 0.17, 0);
+  box(head, 0.26, 0.18, 0.2, W, 0, 0.09, 0);
+  box(head, 0.262, 0.03, 0.202, Y, 0, 0.165, 0);
+  box(head, 0.262, 0.025, 0.202, L, 0, 0.012, 0);
+  box(head, 0.22, 0.08, 0.02, B, 0, 0.09, -0.1);
+  const eyes = [-1, 1].map((s) => box(head, 0.05, 0.05, 0.006, mats.eyes, s * 0.05, 0.09, -0.111));
+  box(head, 0.02, 0.01, 0.006, white, 0.085, 0.05, -0.101);
+  box(head, 0.1, 0.02, 0.022, D, 0, 0.03, -0.1);
+  for (const s of [-1, 1]) {
+    box(head, 0.03, 0.11, 0.13, D, s * 0.145, 0.09, 0);
+    box(head, 0.012, 0.05, 0.06, Y, s * 0.162, 0.09, 0);
+    box(head, 0.013, 0.015, 0.015, amber, s * 0.163, 0.13, 0.04);
+  }
+  for (let i = 0; i < 3; i++) box(head, 0.006, 0.006, 0.16, D, -0.05 + i * 0.05, 0.181, 0.0);
+  const roll = stepper();
+  const anim = {
+    step(t, sign) {
+      wheel.rotation.x -= roll(t) / R;
+      const reach = Math.sin(t * Math.PI);
+      body.rotation.set(-0.12 * reach, 0, 0);
+      const sw = (t - 0.5) * 0.8;
+      arms[0].rotation.set(sw * sign, 0, -0.1);
+      arms[1].rotation.set(-sw * sign, 0, 0.1);
+      head.rotation.set(0.06 * reach, 0, 0);
+    },
+    idle(time, idle, riding) {
+      body.rotation.set(Math.sin(time * 2.2) * 0.035, 0, Math.sin(time * 1.3) * (riding ? 0.06 : 0.02));
+      const out = riding ? 0.5 + Math.sin(time * 2.2) * 0.12 : 0.08 + Math.sin(time * 2.4) * 0.03;
+      arms[0].rotation.set(Math.sin(time * 1.3) * 0.06, 0, -out);
+      arms[1].rotation.set(-Math.sin(time * 1.3) * 0.06, 0, out);
+      head.rotation.set(0, idle > 1.5 ? Math.sin((idle - 1.5) * 1.6) * 0.5 : 0, 0);
+    },
+    fly(level) {
+      body.rotation.set(-0.25 * level, 0, 0);
+      arms[0].rotation.set(0.5 * level, 0, -0.35 * level);
+      arms[1].rotation.set(0.5 * level, 0, 0.35 * level);
+      head.rotation.set(0.15 * level, 0, 0);
+    },
+  };
+  return {
+    legs: [], arms, head, eyes, hands: arms.map((a) => a.userData.hand), back: anchor(torso, 0, 0.0, 0.155), anim,
+    thrust: [anchor(body, 0, -0.25, 0), ...arms.map((a) => a.userData.hand)],
+    jet: { y: AX + 0.62, z: 0.2 },
+  };
+}
+
+// Трак: a small tracked robot in the style of the Go2. Rubber tracks with light road wheels, a
+// light box body with a spine panel and yellow stripes, two manipulator arms with claws, a
+// Go2-like head block with number plates, a black visor with white eyes and a chin grill.
+function buildTrack(model, mats) {
+  const W = mats.body, L = mats.shade, D = mats.dark, B = mats.black, Y = mats.accent;
+  const RUB = mat(0x22232a), red = mat(0xff2b3a, true), green = mat(0x30ff90, true), white = mat(0xf2f4fa, true);
+  const LEN = 0.52, HT = 0.2, RR = HT / 2;
+  const loop = (() => {
+    const s = rrShape(LEN, HT, RR);
+    s.holes.push(rrShape(LEN - 0.05, HT - 0.05, RR - 0.025, new THREE.Path()));
+    const g = new THREE.ExtrudeGeometry(s, { depth: 0.1, bevelEnabled: false, curveSegments: 10 });
+    g.translate(0, 0, -0.05); g.rotateY(-Math.PI / 2);
+    return g;
+  })();
+  const straight = LEN - HT, per = 2 * straight + 2 * Math.PI * RR;
+  const along = (u) => { // [y, z, angle] on the loop
+    u = ((u % per) + per) % per;
+    if (u < straight) return [RR, -straight / 2 + u, 0];
+    u -= straight;
+    if (u < Math.PI * RR) { const a = u / RR; return [Math.cos(a) * RR, straight / 2 + Math.sin(a) * RR, a]; }
+    u -= Math.PI * RR;
+    if (u < straight) return [-RR, straight / 2 - u, Math.PI];
+    u -= straight;
+    const a = Math.PI + u / RR; return [Math.cos(a) * RR, -straight / 2 + Math.sin(a) * RR, a];
+  };
+  const lugs = [], spinners = [];
+  for (const s of [-1, 1]) {
+    const tr = grp(model, s * 0.2, RR + 0.01, 0);
+    const belt = new THREE.Mesh(loop, RUB); belt.castShadow = true; tr.add(belt);
+    for (let i = 0; i < 22; i++) lugs.push([keep(box(tr, 0.104, 0.016, 0.03, B)), i]);
+    for (const [z, y, r] of [[-straight / 2, 0, RR - 0.03], [straight / 2, 0, RR - 0.03], [-0.06, -0.035, 0.045], [0.06, -0.035, 0.045]]) {
+      const w = grp(tr, 0, y, z);
+      cyl(w, r, r, 0.09, L, 0, 0, 0, 0, 0, Math.PI / 2, 16);
+      cyl(w, r * 0.45, r * 0.45, 0.094, D, 0, 0, 0, 0, 0, Math.PI / 2, 10);
+      for (const sx of [-1, 1]) box(w, 0.004, r * 1.3, r * 0.25, D, sx * 0.046, 0, 0);
+      spinners.push([w, r]);
+    }
+    box(tr, 0.02, 0.05, LEN - 0.1, Y, s * 0.06, RR - 0.02, 0);
+    for (const z of [-0.15, 0.15]) box(tr, 0.022, 0.018, 0.018, D, s * 0.06, RR - 0.02, z);
+  }
+  // body: dark base, light box with a shaded band, spine panel, stripes, the number, lights
+  const body = grp(model);
+  box(body, 0.3, 0.07, 0.42, D, 0, 0.21, 0);
+  box(body, 0.3, 0.16, 0.4, W, 0, 0.32, 0);
+  box(body, 0.302, 0.03, 0.402, L, 0, 0.255, 0);
+  box(body, 0.08, 0.012, 0.3, B, 0, 0.406, 0.03);
+  for (const s of [-1, 1]) {
+    box(body, 0.006, 0.05, 0.3, Y, s * 0.152, 0.33, 0.02);
+    box(body, 0.006, 0.07, 0.09, L, s * 0.152, 0.33, -0.15);
+    digits(body, '04', s * 0.156, 0.36, s < 0 ? -0.19 : -0.13, 0.012, B, -s);
+    for (const z of [0.12, 0.15]) box(body, 0.008, 0.06, 0.012, B, s * 0.153, 0.32, z).rotation.x = 0.5;
+  }
+  box(body, 0.06, 0.03, 0.06, B, 0, 0.42, 0.13);
+  box(body, 0.03, 0.012, 0.02, red, 0, 0.44, 0.13);
+  for (const x of [-0.04, 0.04]) box(body, 0.02, 0.02, 0.006, green, x, 0.36, 0.201);
+  box(body, 0.14, 0.03, 0.02, D, 0, 0.29, 0.202);
+  for (const x of [-0.11, 0.11]) { box(body, 0.05, 0.03, 0.012, B, x, 0.3, -0.2); box(body, 0.03, 0.016, 0.006, white, x, 0.3, -0.207); }
+  for (let i = 0; i < 3; i++) box(body, 0.12, 0.006, 0.006, B, 0, 0.27 + i * 0.012, -0.203);
+  box(body, 0.04, 0.012, 0.012, D, 0.08, 0.41, 0.12);
+  // manipulator arms on the shoulders reaching forward, two-finger claws
+  const claws = [], uppers = [];
+  const arms = [-1, 1].map((s) => {
+    const sh = grp(body, s * 0.185, 0.42, -0.1);
+    box(sh, 0.06, 0.08, 0.08, D, 0, 0, 0);
+    box(sh, 0.064, 0.02, 0.084, Y, 0, 0.03, 0);
+    const up = grp(sh, s * 0.01, 0, 0);
+    up.rotation.set(1.0, 0, s * 0.12);
+    box(up, 0.05, 0.16, 0.06, W, 0, -0.08, 0);
+    box(up, 0.052, 0.02, 0.062, L, 0, -0.03, 0);
+    cyl(up, 0.01, 0.01, 0.12, L, s * 0.03, -0.08, 0.02, 0, 0, 0, 8);
+    const el = grp(up, 0, -0.17, 0);
+    el.rotation.x = 0.6;
+    box(el, 0.055, 0.045, 0.055, D, 0, 0, 0);
+    box(el, 0.044, 0.14, 0.05, W, 0, -0.08, 0);
+    box(el, 0.046, 0.02, 0.052, Y, 0, -0.13, 0);
+    const wr = grp(el, 0, -0.16, 0);
+    box(wr, 0.05, 0.03, 0.05, D, 0, 0, 0);
+    for (const k of [-1, 1]) { const f = grp(wr, 0, -0.01, k * 0.018); box(f, 0.02, 0.06, 0.012, B, 0, -0.03, 0); claws.push([f, k]); }
+    uppers.push(up);
+    sh.userData.hand = anchor(wr, 0, -0.03, 0);
+    return sh;
+  });
+  // neck and the Go2-like head
+  box(body, 0.12, 0.08, 0.1, D, 0, 0.43, -0.12);
+  const head = grp(body, 0, 0.46, -0.14);
+  box(head, 0.23, 0.19, 0.16, W, 0, 0.1, 0);
+  box(head, 0.2, 0.17, 0.02, W, 0, 0.1, -0.085);
+  box(head, 0.232, 0.03, 0.162, L, 0, 0.02, 0);
+  box(head, 0.234, 0.022, 0.164, Y, 0, 0.18, 0);
+  box(head, 0.18, 0.07, 0.012, B, 0, 0.11, -0.096);
+  const eyes = [-1, 1].map((s) => box(head, 0.04, 0.04, 0.006, mats.eyes, s * 0.045, 0.11, -0.103));
+  box(head, 0.022, 0.022, 0.008, D, 0, 0.165, -0.098);
+  box(head, 0.01, 0.01, 0.009, mat(0x6a6e88, true), 0, 0.165, -0.1);
+  box(head, 0.15, 0.05, 0.11, B, 0, -0.02, -0.01);
+  for (const dx of [-0.05, -0.025, 0, 0.025, 0.05]) box(head, 0.012, 0.055, 0.115, D, dx, -0.02, -0.01);
+  for (const s of [-1, 1]) {
+    box(head, 0.006, 0.08, 0.1, L, s * 0.116, 0.1, 0.01);
+    digits(head, '04', s * 0.12, 0.13, s < 0 ? -0.06 : 0.0, 0.009, white, -s);
+    for (const dz of [0.035, 0.055]) box(head, 0.006, 0.07, 0.008, Y, s * 0.12, 0.1, dz).rotation.x = 0.55;
+  }
+  const moved = stepper();
+  let run = 0;
+  const roll = (d) => {
+    run += d;
+    for (const [l, i] of lugs) { const [y, z, a] = along(i / 22 * per - run); l.position.set(0, y + Math.cos(a) * 0.006, z + Math.sin(a) * 0.006); l.rotation.x = a; }
+    for (const [w, r] of spinners) w.rotation.x -= d / r;
+  };
+  roll(0);
+  const anim = {
+    step(t) {
+      roll(moved(t));
+      body.position.y = Math.abs(Math.sin(t * Math.PI * 4)) * 0.006;
+      head.rotation.set(0.05 * Math.sin(t * Math.PI), 0, 0);
+    },
+    idle(time, idle) {
+      body.position.y = 0;
+      uppers.forEach((u, i) => { u.rotation.x = 1.0 + Math.sin(time * 1.5 + i) * 0.08; });
+      claws.forEach(([f, k]) => { f.rotation.x = k * (0.1 + Math.max(0, Math.sin(time * 2)) * 0.25); });
+      head.rotation.set(0, idle > 1.5 ? Math.sin((idle - 1.5) * 1.6) * 0.5 : 0, 0);
+    },
+    fly(level) {
+      uppers.forEach((u) => { u.rotation.x = 1.0 - 0.6 * level; });
+      head.rotation.set(0.1 * level, 0, 0);
+    },
+    menu(time, wave) {
+      uppers[1].rotation.x = 1.0 + wave * 1.2;
+      claws.forEach(([f, k], i) => { if (i > 1) f.rotation.x = k * wave * (0.3 + 0.3 * Math.sin(time * 14)); });
+      head.rotation.y = Math.sin(time * 0.7) * 0.35;
+    },
+  };
+  return {
+    legs: [], arms, head, eyes, hands: arms.map((a) => a.userData.hand), back: anchor(body, 0, 0.33, 0.2), anim,
+    thrust: [-1, 1].map((s) => anchor(model, s * 0.2, 0.02, 0)),
+    jet: { y: 0.55, z: 0.13 },
+  };
+}
+
+// Гекса: a hexapod. A layered hexagonal body with six legs on its corners, a sensor turret on
+// top, a battery at the back, an armoured head with a black visor, four eyes, mandibles, feelers.
+function buildHexa(model, mats) {
+  const W = mats.body, L = mats.shade, D = mats.dark, B = mats.black, Y = mats.accent;
+  const red = mat(0xff2b4a, true), steel = mat(0x9aa0b8);
+  const lamp = own(0x6dffb0);
+  const hexGeo = (r, d, hole = 0) => {
+    const pts = (rad) => [...Array(6)].map((_, i) => new THREE.Vector2(Math.cos(Math.PI / 6 + i / 6 * Math.PI * 2) * rad, Math.sin(Math.PI / 6 + i / 6 * Math.PI * 2) * rad));
+    const s = new THREE.Shape(pts(r));
+    if (hole) s.holes.push(new THREE.Path(pts(hole).reverse()));
+    const g = new THREE.ExtrudeGeometry(s, { depth: d, bevelEnabled: false });
+    g.translate(0, 0, -d / 2); g.rotateX(-Math.PI / 2);
+    return g;
+  };
+  const hex = (p, r, d, m, y, hole = 0) => { const o = new THREE.Mesh(hexGeo(r, d, hole), m); o.position.y = y; o.castShadow = true; p.add(o); return o; };
+  const body = grp(model, 0, 0.42, 0);
+  hex(body, 0.27, 0.05, B, -0.075);
+  hex(body, 0.315, 0.12, W, 0);
+  hex(body, 0.32, 0.022, L, -0.045);
+  hex(body, 0.26, 0.04, L, 0.075);
+  hex(body, 0.215, 0.012, Y, 0.098, 0.17);
+  hex(body, 0.15, 0.02, D, 0.1);
+  hex(body, 0.06, 0.012, lamp, 0.112);
+  const sideLights = [];
+  for (let i = 1; i < 6; i++) {
+    const a = i / 6 * Math.PI * 2;
+    const f = grp(body, Math.sin(a) * 0.272, 0, -Math.cos(a) * 0.272);
+    f.rotation.y = -a;
+    box(f, 0.14, 0.05, 0.02, D, 0, 0, -0.004);
+    for (let k = 0; k < 3; k++) box(f, 0.1, 0.006, 0.006, B, 0, -0.014 + k * 0.014, -0.016);
+    for (const x of [-0.055, 0.055]) { const m = own(0x6dffb0); sideLights.push(m); box(f, 0.014, 0.014, 0.006, m, x, 0, -0.016); }
+  }
+  box(body, 0.18, 0.08, 0.1, D, 0, 0.07, 0.24);
+  box(body, 0.184, 0.012, 0.104, Y, 0, 0.1, 0.24);
+  for (let k = 0; k < 3; k++) box(body, 0.15, 0.008, 0.006, B, 0, 0.055 + k * 0.015, 0.292);
+  const dome = grp(body, 0, 0.115, 0.04);
+  box(dome, 0.08, 0.03, 0.08, D, 0, 0.015, 0);
+  box(dome, 0.06, 0.04, 0.05, W, 0, 0.05, 0);
+  box(dome, 0.04, 0.008, 0.006, red, 0, 0.05, -0.026);
+  // head (its origin at the bottom, so head items sit on top)
+  const head = grp(body, 0, -0.045, -0.3);
+  box(head, 0.1, 0.07, 0.08, D, 0, 0.065, 0.06);
+  box(head, 0.24, 0.13, 0.16, W, 0, 0.065, 0);
+  box(head, 0.245, 0.03, 0.165, Y, 0, 0.125, 0);
+  box(head, 0.246, 0.02, 0.165, L, 0, 0.01, 0);
+  box(head, 0.2, 0.08, 0.02, B, 0, 0.065, -0.08);
+  const eyes = [[-0.045, 0.005, 0.04, 0.045], [0.045, 0.005, 0.04, 0.045], [-0.08, 0.018, 0.016, 0.018], [0.08, 0.018, 0.016, 0.018]]
+    .map(([x, y, w, h]) => box(head, w, h, 0.006, mats.eyes, x, 0.065 + y, -0.091));
+  const jaws = [-1, 1].map((s) => {
+    const j = grp(head, s * 0.07, 0.0, -0.06);
+    box(j, 0.035, 0.03, 0.08, D, 0, 0, -0.03);
+    box(j, 0.02, 0.02, 0.04, steel, -s * 0.01, 0, -0.08).rotation.y = s * 0.4;
+    return [j, s];
+  });
+  for (const s of [-1, 1]) {
+    const f = grp(head, s * 0.1, 0.12, -0.05);
+    f.rotation.set(-0.9, 0, -s * 0.5);
+    box(f, 0.008, 0.12, 0.008, steel, 0, 0.06, 0);
+    box(f, 0.016, 0.016, 0.016, lamp, 0, 0.125, 0);
+  }
+  const legs = [];
+  for (let i = 0; i < 6; i++) {
+    const ang = (i / 6) * Math.PI * 2 + Math.PI / 6;
+    const hip = grp(body, Math.sin(ang) * 0.3, -0.01, -Math.cos(ang) * 0.3);
+    hip.rotation.y = -ang + Math.PI / 2;
+    const yaw = grp(hip);
+    box(yaw, 0.09, 0.09, 0.09, D);
+    box(yaw, 0.094, 0.02, 0.094, Y, 0, 0.04, 0);
+    const femur = grp(yaw, 0.03, 0, 0);
+    femur.rotation.z = 0.7;
+    box(femur, 0.26, 0.065, 0.075, W, 0.14, 0, 0);
+    box(femur, 0.26, 0.02, 0.077, L, 0.14, -0.03, 0);
+    box(femur, 0.1, 0.067, 0.012, Y, 0.1, 0, 0.034);
+    cyl(femur, 0.013, 0.013, 0.12, D, 0.13, -0.05, 0, 0, 0, Math.PI / 2, 8);
+    cyl(femur, 0.007, 0.007, 0.08, steel, 0.22, -0.05, 0, 0, 0, Math.PI / 2, 8);
+    const knee = grp(femur, 0.28, 0, 0);
+    knee.rotation.z = -1.95;
+    box(knee, 0.08, 0.08, 0.08, D);
+    box(knee, 0.03, 0.03, 0.082, lamp);
+    box(knee, 0.32, 0.06, 0.065, W, 0.18, 0, 0);
+    box(knee, 0.32, 0.018, 0.067, L, 0.18, 0.025, 0);
+    box(knee, 0.06, 0.07, 0.075, D, 0.35, 0, 0);
+    box(knee, 0.03, 0.09, 0.09, B, 0.39, 0, 0);
+    legs.push({ yaw, femur, knee, i });
+  }
+  const back = anchor(body, 0, 0.12, 0.05);
+  back.rotation.x = -Math.PI / 2;
+  const gait = (ph, lift = 1) => {
+    for (const l of legs) {
+      const p = ph + (l.i % 2) * Math.PI;
+      l.yaw.rotation.y = Math.sin(p) * 0.3;
+      l.femur.rotation.z = 0.7 + Math.max(0, Math.cos(p)) * 0.35 * lift;
+      l.knee.rotation.z = -1.95;
+    }
+  };
+  const anim = {
+    step(t) {
+      gait(t * Math.PI * 2);
+      body.position.y = 0.42 + Math.abs(Math.sin(t * Math.PI * 2)) * 0.015;
+      head.rotation.set(0, 0, 0);
+    },
+    idle(time, idle) {
+      for (const l of legs) { l.yaw.rotation.y = 0; l.femur.rotation.z = 0.7; l.knee.rotation.z = -1.95; }
+      if (idle > 2.5) legs[0].femur.rotation.z = 0.7 + Math.max(0, Math.sin(time * 8)) * 0.3;
+      body.position.y = 0.42 + Math.sin(time * 2.4) * 0.006;
+      head.rotation.set(0, idle > 1.5 ? Math.sin((idle - 1.5) * 1.6) * 0.45 : 0, 0);
+      jaws.forEach(([j, s]) => { j.rotation.y = s * (0.1 + Math.max(0, Math.sin(time * 3)) * 0.2); });
+    },
+    fly(level, time) {
+      for (const l of legs) { l.yaw.rotation.y = 0; l.femur.rotation.z = 0.7 + 0.6 * level; l.knee.rotation.z = -1.95 - 0.5 * level + Math.sin(time * 6 + l.i) * 0.05; }
+      body.position.y = 0.42;
+    },
+    menu(time, wave) {
+      legs[1].femur.rotation.z = 0.7 + wave * 1.0;
+      legs[1].yaw.rotation.y = wave * Math.sin(time * 14) * 0.25;
+      head.rotation.y = Math.sin(time * 0.7) * 0.35;
+    },
+    tick(time) {
+      dome.rotation.y = time * 2;
+      lamp.color.setHSL(0.4, 1, 0.55 + 0.15 * Math.sin(time * 2));
+      sideLights.forEach((m, i) => m.color.setHex((Math.floor(time * 6) % 10) === i ? 0x0d3020 : 0x6dffb0));
+    },
+  };
+  return {
+    legs: [], arms: [], head, eyes, hands: [], back, anim,
+    thrust: [[0, -0.2], [-0.15, 0.12], [0.15, 0.12]].map(([x, z]) => anchor(body, x, -0.1, z)),
+    jet: { y: 0.62, z: 0.05, lying: true },
+  };
+}
+
+// Ролли: a rolling ball droid. A ball with hexagonal hatches sunk into it (a flush accent rim, a
+// wall, a dark floor with a lamp, a vent, lights or bolts), seams, and a dome head with a black
+// visor and two eyes floating on a glowing magnet ring; a camera on an arm.
+function buildRolly(model, mats) {
+  const W = mats.body, L = mats.shade, D = mats.dark, B = mats.black, Y = mats.accent;
+  const RAD = 0.36, DEPTH = 0.02;
+  for (const m of [Y, D, B]) m.side = THREE.DoubleSide;
+  const ball = grp(model, 0, RAD, 0);
+  const dirs = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0.7, 0.55, 0.7], [-0.7, 0.55, -0.7], [0.7, -0.6, -0.7], [-0.7, -0.6, 0.7]];
+  const hatch = dirs.map((d, i) => {
+    const n = new THREE.Vector3(...d).normalize();
+    const t1 = new THREE.Vector3(0, 1, 0).cross(n);
+    if (t1.lengthSq() < 1e-4) t1.set(1, 0, 0);
+    t1.normalize();
+    return { n, t1, t2: n.clone().cross(t1), r: i < 4 ? 0.36 : 0.26 };
+  });
+  const HEX = [[1.1547, 0], [0.5774, 1], [-0.5774, 1], [-1.1547, 0], [-0.5774, -1], [0.5774, -1]];
+  const hexDist = (h, v) => {
+    const z = v.dot(h.n);
+    if (z < 0.5) return 9;
+    const x = Math.abs(v.dot(h.t1) / z), y = Math.abs(v.dot(h.t2) / z);
+    return Math.max(y, x * 0.866 + y * 0.5) / h.r;
+  };
+  const onBall = (h, x, y, rad) => h.n.clone().addScaledVector(h.t1, x).addScaledVector(h.t2, y).normalize().multiplyScalar(rad);
+  const ring = (h, k0, rad0, k1, rad1, steps = 5) => {
+    const pts = [], ix = [];
+    for (let e = 0; e < 6; e++) {
+      const [ax, ay] = HEX[e], [bx, by] = HEX[(e + 1) % 6];
+      for (let j = 0; j < steps; j++) {
+        const f = j / steps, x = (ax + (bx - ax) * f) * h.r, y = (ay + (by - ay) * f) * h.r;
+        pts.push(onBall(h, x * k0, y * k0, rad0), onBall(h, x * k1, y * k1, rad1));
+      }
+    }
+    const n = pts.length / 2;
+    for (let i = 0; i < n; i++) { const a = i * 2, b = ((i + 1) % n) * 2; ix.push(a, b, a + 1, b, b + 1, a + 1); }
+    const g = new THREE.BufferGeometry().setFromPoints(pts);
+    g.setIndex(ix); g.computeVertexNormals();
+    return g;
+  };
+  const floor = (h, k, rad, steps = 5) => {
+    const pts = [h.n.clone().multiplyScalar(rad)], ix = [];
+    for (let e = 0; e < 6; e++) {
+      const [ax, ay] = HEX[e], [bx, by] = HEX[(e + 1) % 6];
+      for (let j = 0; j < steps; j++) { const f = j / steps; pts.push(onBall(h, (ax + (bx - ax) * f) * h.r * k, (ay + (by - ay) * f) * h.r * k, rad)); }
+    }
+    const n = pts.length - 1;
+    for (let i = 0; i < n; i++) ix.push(0, 1 + ((i + 1) % n), 1 + i);
+    const g = new THREE.BufferGeometry().setFromPoints(pts);
+    g.setIndex(ix); g.computeVertexNormals();
+    return g;
+  };
+  const mesh = (g, m) => { const o = new THREE.Mesh(g, m); o.castShadow = true; ball.add(o); return o; };
+  // the shell with the hatches cut out (the ragged cut hides under each rim)
+  const shell = new THREE.SphereGeometry(RAD, 72, 54);
+  const pos = shell.attributes.position, v = new THREE.Vector3(), c = new THREE.Vector3();
+  const idx = shell.index.array, kept = [];
+  for (let t = 0; t < idx.length; t += 3) {
+    c.set(0, 0, 0);
+    for (let k = 0; k < 3; k++) c.add(v.fromBufferAttribute(pos, idx[t + k]));
+    c.normalize();
+    if (hatch.every((h) => hexDist(h, c) > 0.88)) kept.push(idx[t], idx[t + 1], idx[t + 2]);
+  }
+  shell.setIndex(kept);
+  mesh(shell, W);
+  const UP = RAD + 0.0008;
+  const lamps = [];
+  hatch.forEach((h, i) => {
+    mesh(ring(h, 0.78, UP, 1.0, UP), Y);
+    mesh(ring(h, 1.0, RAD + 0.0006, 1.045, RAD + 0.0006), D);
+    mesh(ring(h, 0.7, RAD - DEPTH, 0.78, UP), D);
+    mesh(floor(h, 0.7, RAD - DEPTH), B);
+    const g = grp(ball);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), h.n);
+    const k = i < 4 ? 1 : 0.72, z = RAD - DEPTH + 0.004, kind = i % 4;
+    if (kind === 0) for (let j = 0; j < 4; j++) box(g, (0.12 - Math.abs(j - 1.5) * 0.025) * k, 0.012 * k, 0.006, D, 0, (-0.039 + j * 0.026) * k, z);
+    if (kind === 1) { cyl(g, 0.04 * k, 0.04 * k, 0.006, L, 0, 0, z, Math.PI / 2, 0, 0, 20); const m = own(0x35e6ff); lamps.push(m); cyl(g, 0.026 * k, 0.026 * k, 0.008, m, 0, 0, z + 0.002, Math.PI / 2, 0, 0, 20); }
+    if (kind === 2) { const m = own(0xff7a2a); lamps.push(m); for (let j = 0; j < 3; j++) box(g, 0.016 * k, 0.06 * k, 0.006, m, (-0.03 + j * 0.03) * k, 0, z); }
+    if (kind === 3) for (let j = 0; j < 6; j++) { const a = j / 6 * Math.PI * 2; cyl(g, 0.009 * k, 0.009 * k, 0.006, L, Math.cos(a) * 0.055 * k, Math.sin(a) * 0.055 * k, z, Math.PI / 2, 0, 0, 8); }
+  });
+  for (const [rx, ry] of [[0.3, 0], [Math.PI / 2, 0.7], [1.1, 2.2]]) {
+    const s = new THREE.Mesh(new THREE.TorusGeometry(RAD, 0.0025, 4, 72), D);
+    s.rotation.set(rx, ry, 0);
+    ball.add(s);
+  }
+  // magnet ring and the head
+  const ringY = RAD * 2 + 0.012;
+  const glowRing = own(0x35e6ff);
+  const magnet = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.01, 6, 24), glowRing);
+  magnet.rotation.x = Math.PI / 2; magnet.position.y = ringY;
+  model.add(magnet);
+  const haze = keep(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.06, 0.05, 20, 1, true), new THREE.MeshBasicMaterial({ color: 0x35e6ff, transparent: true, opacity: 0.18, depthWrite: false, blending: THREE.AdditiveBlending })));
+  haze.position.y = ringY + 0.025;
+  model.add(haze);
+  const head = grp(model, 0, ringY + 0.065, 0);
+  const lathe = (pts, m) => { const o = new THREE.Mesh(new THREE.LatheGeometry(pts.map(([r, y]) => new THREE.Vector2(r, y)), 32), m); o.castShadow = true; head.add(o); return o; };
+  lathe([[0.09, -0.05], [0.15, -0.048], [0.172, -0.032], [0.18, -0.01]], D);
+  lathe([[0.18, -0.01], [0.182, 0.04], [0.176, 0.09], [0.156, 0.13], [0.12, 0.16], [0.07, 0.177], [0, 0.181]], W);
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.181, 0.012, 6, 40), Y);
+  band.rotation.x = Math.PI / 2; band.position.y = 0.018; head.add(band);
+  lathe([[0, 0.188], [0.045, 0.184], [0.06, 0.176]], Y);
+  box(head, 0.22, 0.095, 0.07, B, 0, 0.075, -0.16);
+  box(head, 0.226, 0.012, 0.072, Y, 0, 0.128, -0.158);
+  const eyes = [-1, 1].map((s) => box(head, 0.04, 0.05, 0.008, mats.eyes, s * 0.048, 0.078, -0.197));
+  box(head, 0.03, 0.008, 0.006, mat(0x35e6ff, true), 0, 0.04, -0.196);
+  box(head, 0.05, 0.03, 0.04, D, -0.18, 0.09, -0.02);
+  const cam = grp(head, -0.2, 0.09, -0.02);
+  cyl(cam, 0.028, 0.028, 0.08, W, 0, 0, 0, Math.PI / 2, 0, 0, 16);
+  cyl(cam, 0.019, 0.019, 0.01, B, 0, 0, -0.042, Math.PI / 2, 0, 0, 16);
+  cyl(cam, 0.009, 0.009, 0.012, mat(0xff3a2a, true), 0, 0, -0.045, Math.PI / 2, 0, 0, 10);
+  const rolled = stepper();
+  const anim = {
+    step(t) {
+      ball.rotation.x -= rolled(t) / RAD;
+      head.position.y = ringY + 0.065 + Math.sin(t * Math.PI) * 0.02;
+      head.rotation.set(-0.12 * Math.sin(t * Math.PI), 0, 0);
+    },
+    idle(time, idle, riding) {
+      head.position.y = ringY + 0.065 + Math.sin(time * 3) * 0.008;
+      head.rotation.set(Math.sin(time * 1.6) * 0.05, idle > 1.5 ? Math.sin((idle - 1.5) * 1.6) * 0.5 : 0, riding ? Math.sin(time * 2.2) * 0.08 : 0);
+    },
+    fly(level) { head.rotation.set(0.1 * level, 0, 0); },
+    menu(time, wave) {
+      head.rotation.set(0, Math.sin(time * 0.7) * 0.35 + wave * Math.sin(time * 9) * 0.3, wave * 0.2);
+    },
+    tick(time) {
+      glowRing.color.setHSL(0.52, 1, 0.5 + 0.15 * Math.sin(time * 6));
+      haze.scale.set(1 + 0.08 * Math.sin(time * 6), 1, 1 + 0.08 * Math.sin(time * 6));
+      lamps.forEach((m, i) => { m.color.setHex(Math.floor(time * 3 + i) % 4 ? (m.userData.on ??= m.color.getHex()) : 0x111318); });
+    },
+  };
+  return {
+    legs: [], arms: [], head, eyes, hands: [], back: null, anim,
+    thrust: [anchor(model, 0, 0.0, 0)],
+    jet: { y: ringY + 0.09, z: 0.2 },
+  };
 }
 
 // An empty group where garage items get attached.

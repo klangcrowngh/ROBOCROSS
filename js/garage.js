@@ -12,6 +12,10 @@ export const CATEGORIES = [
       { id: 'rr', name: 'Agibot', price: 0, color: 0xd6a124 },
       { id: 'titan', name: 'PM01', price: 800, color: 0xe0202c },
       { id: 'dog', name: 'Go2', price: 1200, color: 0x9a9eae },
+      { id: 'uni', name: 'Юни', price: 1500, color: 0xff6a00 },
+      { id: 'track', name: 'Трак', price: 1800, color: 0xffc21a },
+      { id: 'hexa', name: 'Гекса', price: 2200, color: 0x30d860 },
+      { id: 'rolly', name: 'Ролли', price: 2500, color: 0x14b8b0 },
     ],
   },
   {
@@ -172,6 +176,10 @@ const LOOKS = {
   rr: { body: 'classic', accent: 'mustard', trim: 'stock', scheme: 'classic', eyes: 'white', acc: 'none', arms: 'none', back: 'none' },
   titan: { body: 'classic', accent: 'red', trim: 'stock', scheme: 'classic', eyes: 'white', acc: 'none', arms: 'none', back: 'none' },
   dog: { body: 'classic', accent: 'lime', trim: 'stock', scheme: 'classic', eyes: 'yellow', acc: 'none', arms: 'none', back: 'none' },
+  uni: { body: 'classic', accent: 'orange', trim: 'stock', scheme: 'classic', eyes: 'white', acc: 'none', arms: 'none', back: 'none' },
+  track: { body: 'classic', accent: 'yellow', trim: 'stock', scheme: 'classic', eyes: 'white', acc: 'none', arms: 'none', back: 'none' },
+  hexa: { body: 'classic', accent: 'green', trim: 'stock', scheme: 'classic', eyes: 'white', acc: 'none', arms: 'none', back: 'none' },
+  rolly: { body: 'classic', accent: 'teal', trim: 'stock', scheme: 'classic', eyes: 'white', acc: 'none', arms: 'none', back: 'none' },
 };
 const DEFAULT = {
   owned: ['model:rr', 'body:classic', 'accent:mustard', 'trim:stock', 'scheme:classic', 'eyes:white', 'acc:none', 'arms:none', 'back:none'],
@@ -193,6 +201,10 @@ export async function loadGarage() {
   } catch {}
   return garage;
 }
+
+// slots a robot does not have (no hands on the hexapod and the ball, no back on the ball)
+export const NO_SLOT = { hexa: ['arms'], rolly: ['arms', 'back'] };
+export const hasSlot = (model, cat) => !NO_SLOT[model]?.includes(cat);
 
 // what is equipped in a category for the current robot
 export const equipped = (cat) => (cat === 'model' ? garage.model : garage.looks[garage.model][cat]);
@@ -295,7 +307,7 @@ export function applyLook(robot, preview = null, onRebuild = null) {
   // head, hands and back items are worn together; items of another robot fall back to none
   for (const o of robot.items ?? []) o.parent?.remove(o);
   if (robot.acc) robot.head.remove(robot.acc);
-  const fits = (cat, id) => (!item(cat, id).only || item(cat, id).only === model) && item(cat, id).not !== model;
+  const fits = (cat, id) => hasSlot(model, cat) && (!item(cat, id).only || item(cat, id).only === model) && item(cat, id).not !== model;
   const acc = fits('acc', e.acc) ? e.acc : 'none';
   robot.acc = GEAR.accessory(acc, accent, model);
   robot.head.add(robot.acc);

@@ -69,7 +69,10 @@ export function bake(g) {
 // ---------------------------------------------------------------- head items
 // Built for the Agibot head (0.21 wide, top at y 0.22, face at z -0.106); the group is stretched
 // to the other heads. Items that belong to the dog's jaw use the unscaled root.
-const HEAD = { rr: [0.105, -0.106, 0.106, 0.22], titan: [0.121, -0.117, 0.116, 0.222], dog: [0.115, -0.094, 0.075, 0.22] };
+const HEAD = {
+  rr: [0.105, -0.106, 0.106, 0.22], titan: [0.121, -0.117, 0.116, 0.222], dog: [0.115, -0.094, 0.075, 0.22],
+  uni: [0.13, -0.1, 0.1, 0.182], track: [0.116, -0.095, 0.08, 0.192], hexa: [0.122, -0.082, 0.082, 0.14], rolly: [0.16, -0.17, 0.17, 0.182],
+};
 
 export function accessory(kind, a, model = 'rr') {
   const root = new THREE.Group();
