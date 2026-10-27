@@ -147,6 +147,12 @@ function resetGen() {
 }
 
 const difficulty = (row) => Math.min(row / 160, 1);
+// How far the run has ramped up: 0 at the start, 1 (full density) from about row 150.
+const ramp = (row) => clamp((row - 8) / 140, 0, 1);
+// weights blended from an easy table to a hard one
+const rampWeights = (easy, hard, k) => Object.fromEntries(
+  [...new Set([...Object.keys(easy), ...Object.keys(hard)])].map((n) => [n, (easy[n] ?? 0) * (1 - k) + (hard[n] ?? 0) * k]),
+);
 
 // Hazard groups: when they unlock, base weight, how many rows, how long until the same kind
 // may appear again, and how much "tension" one row adds.
@@ -458,9 +464,9 @@ function buildSafe(lane) {
     const crossAlley = bp && bp.idx % 3 === 2;
     // obstacle budget per row: open enough to breathe, ground details fill the rest
     const n = row <= 3 ? 1
-      : bp ? (crossAlley ? randInt(0, 1) : weighted({ 0: 10, 1: 50, 2: 40 }) | 0)
-      : park ? weighted({ 0: 26, 1: 52, 2: 22 }) | 0
-      : weighted({ 0: 28, 1: 50, 2: 22 }) | 0;
+      : bp ? (crossAlley ? randInt(0, 1) : weighted(rampWeights({ 0: 18, 1: 58, 2: 24 }, { 0: 10, 1: 50, 2: 40 }, ramp(row))) | 0)
+      : park ? weighted(rampWeights({ 0: 40, 1: 48, 2: 12 }, { 0: 26, 1: 52, 2: 22 }, ramp(row))) | 0
+      : weighted(rampWeights({ 0: 48, 1: 44, 2: 8 }, { 0: 28, 1: 50, 2: 22 }, ramp(row))) | 0;
     // spread obstacles out: not next to each other, not stacked on the ones in the row below
     const below = lanes.get(row - 1)?.blocked ?? new Set();
     const nearBelow = (x) => below.has(x - 1) || below.has(x) || below.has(x + 1);
@@ -636,8 +642,10 @@ function buildSafe(lane) {
   }
   // Robotic lawn mowers trimming the grass: in the inner rows of big parks, now and then in
   // small ones (never on the first or last row of a park, the robot enters and leaves there)
-  const mowerRow = bp ? bp.idx > 0 && bp.idx < bp.len - 1 && Math.random() < 0.35 : park && row > 10 && Math.random() < 0.12;
-  if (mowerRow && lane.blocked.size <= 2) {
+  // (never on the lane the robot lands on from a hazard: from a boat it must be able to step off)
+  const afterHazard = WAIT_FOR.has(lane.prevType);
+  const mowerRow = bp ? bp.idx > 0 && bp.idx < bp.len - 1 && Math.random() < 0.2 + 0.15 * ramp(row) : park && row > 10 && Math.random() < 0.12;
+  if (mowerRow && !afterHazard && lane.blocked.size <= 2) {
     const mesh = M.makeMower();
     group.add(mesh);
     lane.patrol = { mesh, x: rand(-HALF, HALF), dir: Math.random() < 0.5 ? 1 : -1, speed: rand(0.8, 1.2), beep: 0, mower: true };
@@ -646,8 +654,11 @@ function buildSafe(lane) {
   // Patrol drone sweeping the sidewalk.
   // (inside a run of sidewalks or a plaza, never right in front of a road or water: that is where
   // the robot waits)
-  if (row > 30 && (inf.style === 'sidewalk' || inf.style === 'plaza') && !inf.park && !inf.center && !WAIT_FOR.has(lane.nextType)
-    && !inf.viaduct && !inf.gate && lane.blocked.size < 2 && Math.random() < 0.25) {
+  // (and not on the lane right after one either: a drone flying in step with the boat the robot
+  // rides would leave it no place to land)
+  if (row > 30 && (inf.style === 'sidewalk' || inf.style === 'plaza') && !inf.park && !inf.center
+    && !WAIT_FOR.has(lane.nextType) && !afterHazard
+    && !inf.viaduct && !inf.gate && lane.blocked.size < 2 && Math.random() < 0.25 * ramp(row) + 0.05) {
     const mesh = M.makePatrol();
     group.add(mesh);
     lane.patrol = { mesh, x: rand(-HALF, HALF), dir: Math.random() < 0.5 ? 1 : -1, speed: rand(1.1, 1.7) * (1 + difficulty(row) * 0.5), beep: 0 };
@@ -708,9 +719,9 @@ function buildRoad(lane) {
     lane.speed = Math.max(lo, Math.min(hi, lane.speed));
   }
   // dense enough that running straight ahead without looking gets the robot hit
-  const count = hover ? randInt(2, 3) : lane.row < 12 ? randInt(2, 3)
-    : lane.row < 30 ? weighted({ 2: 40, 3: 45, 4: 15 }) | 0
-    : weighted({ 2: 20, 3: 50, 4: 30 }) | 0;
+  const k = ramp(lane.row);
+  const count = hover ? (Math.random() < 0.3 + 0.6 * k ? 3 : 2)
+    : weighted(rampWeights({ 1: 25, 2: 55, 3: 20 }, { 2: 20, 3: 50, 4: 30 }, k)) | 0;
   const list = [];
   for (let i = 0; i < count; i++) {
     const mesh = M.makeVehicle(weighted(hover ? HOVER_KINDS : ROAD_KINDS));
