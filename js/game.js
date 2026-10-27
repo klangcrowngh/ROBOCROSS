@@ -2700,11 +2700,11 @@ $('shieldbtn').addEventListener('click', () => {
 $('pausebtn').addEventListener('click', () => { if (state === 'play' && P.alive) setPause(true); });
 $('resume').addEventListener('click', () => { setPause(false); sfx.unlock(); sfx.click(); });
 $('newrun').addEventListener('click', () => { setPause(false); clearRun(); newWorld(); });
-$('mute').textContent = isMuted() ? '🔇' : '🔊';
+$('mute').classList.toggle('off', isMuted());
 $('mute').addEventListener('click', () => {
   setMuted(!isMuted());
   sfx.click();
-  $('mute').textContent = isMuted() ? '🔇' : '🔊';
+  $('mute').classList.toggle('off', isMuted());
 });
 $('music').classList.toggle('off', !isMusicOn());
 $('music').addEventListener('click', () => {
