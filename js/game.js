@@ -646,9 +646,9 @@ function buildSafe(lane) {
     lane.patrol = { mesh, x: rand(-HALF, HALF), dir: Math.random() < 0.5 ? 1 : -1, speed: rand(1.1, 1.7) * (1 + difficulty(row) * 0.5), beep: 0 };
   }
   // parks: a token every other row along the alley, not a solid line
-  const trailCoin = inf.trail != null && row > 2 && ((inf.park?.idx ?? row) % 2 === 0 && Math.random() < 0.5);
+  const trailCoin = inf.trail != null && row > 2 && ((inf.park?.idx ?? row) % 2 === 0 && Math.random() < 0.65);
   if (trailCoin) placeCoin(lane, inf.trail);
-  else if (!park) maybeCoin(lane, 0.05);
+  else if (!park) maybeCoin(lane, 0.08);
 }
 
 const ROAD_KINDS = { taxi: 3, sedan: 2, compact: 1.5, police: 1, truck: 1.5, bus: 1 };
@@ -708,7 +708,7 @@ function buildRoad(lane) {
   const start = nb && nb.movers.length ? wrap(nb.movers[0].x + LOOP / (2 * Math.max(1, count))) : rand(-SPAWN, SPAWN);
   placeMovers(lane, list, 3.4, start);
   for (const v of list) v.honk = 0;
-  maybeCoin(lane, 0.03);
+  maybeCoin(lane, 0.05);
 }
 
 // Gap between city levels, crossed on anti-gravity pads.
@@ -1731,9 +1731,11 @@ function onRobotRebuilt() {
   placeJetpack();
 }
 // on the humanoids' backs; on the dog's spine, nozzles pointing down
+// a back item (backpack, battery, ...) pushes the jetpack outwards so they do not overlap
 function placeJetpack() {
-  if (robot.kind === 'dog') { jetPack.position.set(0, 0.84, 0.08); jetPack.rotation.set(0, 0, 0); }
-  else { jetPack.position.set(0, 0.95, 0.17); jetPack.rotation.set(0, 0, 0); }
+  const depth = robot.backDepth ?? 0;
+  if (robot.kind === 'dog') jetPack.position.set(0, 0.84 + depth, 0.08);
+  else jetPack.position.set(0, 0.95, 0.17 + depth);
 }
 
 // Ability buttons stack in a column at the bottom right; each ring fills as it recharges.
@@ -2505,7 +2507,7 @@ async function openLeaders() {
 }
 
 let garageTab = 'model';
-let tryOn = null; // { cat, id, model? } being previewed but not owned (model: a robot still on try-on)
+let tryOn = null; // { model?, set: { cat: id } } items being tried on together (model: a robot not bought yet)
 function openGarage() {
   menuView = 'garage';
   tryOn = null;
@@ -2543,6 +2545,8 @@ const TAB_ICONS = {
   scheme: '<path fill="#d9dce4" d="M1 1h10v10H1z"/><path fill="#ff2ec8" d="M1 1h5v5H1z"/><path fill="#14e4ff" d="M6 6h5v5H6z"/><path fill="#1a1c3a" d="M6 1h5v5H6z"/>',
   eyes: '<path fill="#f4f6ff" d="M2 3h8v1h2v4h-2v1H2V8H0V4h2z"/><path fill="#35e6ff" d="M4 4h4v4H4z"/><path fill="#1a1c3a" d="M5 5h2v2H5z"/>',
   acc: '<path fill="#ffc83a" d="M0 3h2v2h1V2h2v2h2V2h2v3h1V3h2v8H0z"/><path fill="#ff3a5a" d="M5 6h2v2H5z"/>',
+  arms: '<path fill="#c9ccd8" d="M1 0h4v7H1z"/><path fill="#14e4ff" d="M1 5h4v2H1z"/><path fill="#5a5e70" d="M0 7h6v4H0z"/><path fill="#ff2ec8" d="M7 6h5v2H7z"/><path fill="#ffffff" d="M6 6h1v2H6z"/>',
+  back: '<path fill="#14e4ff" d="M0 2h4v1H0zM1 4h3v1H1zM8 2h4v1H8zM8 4h3v1H8z"/><path fill="#c9ccd8" d="M4 1h4v10H4z"/><path fill="#ff2ec8" d="M5 3h2v5H5z"/>',
 };
 const svgUrl = (body, size) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges">${body}</svg>`)}`;
 // Robot cards show a real 3D render of that robot in its own garage look (cached per look).
@@ -2559,7 +2563,7 @@ function robotThumb(kind, preview = null, focus = 'body') {
   }
   const r = M.makeRobot({}, kind);
   G.applyLook(r, preview ? { ...preview, model: kind } : { cat: 'model', id: kind });
-  r.acc?.userData.tick?.(0.3);
+  for (const tick of r.ticks ?? []) tick(0.3);
   if (r.rainbow) r.mats.eyes.color.setHSL(0.85, 1, 0.6);
   const sc = new THREE.Scene();
   sc.add(new THREE.HemisphereLight(0xe8ecff, 0x40425a, 2.4));
@@ -2573,7 +2577,8 @@ function robotThumb(kind, preview = null, focus = 'body') {
   const half = focus === 'head' ? Math.max(size.x, size.y, size.z) * 0.8
     : kind === 'dog' ? Math.max(size.y, size.z) * 0.6 : size.y * 0.54;
   const cam = new THREE.OrthographicCamera(-half * 1.25, half * 1.25, half, -half, 0.1, 20);
-  const dir = kind === 'dog' && focus !== 'head' ? new THREE.Vector3(-1, 0.55, -0.75) : new THREE.Vector3(-0.55, 0.3, -1);
+  const dir = focus === 'back' ? (kind === 'dog' ? new THREE.Vector3(-1, 1.1, 0.7) : new THREE.Vector3(-0.7, 0.35, 1))
+    : kind === 'dog' && focus !== 'head' ? new THREE.Vector3(-1, 0.55, -0.75) : new THREE.Vector3(-0.55, 0.3, -1);
   cam.position.copy(c).addScaledVector(dir.normalize(), 6);
   cam.lookAt(c);
   thumbRenderer.render(sc, cam);
@@ -2592,67 +2597,93 @@ function renderGarage() {
   $('garage-tabs').innerHTML = '';
   for (const c of G.CATEGORIES) {
     const b = document.createElement('button');
-    b.innerHTML = `<img src="${svgUrl(TAB_ICONS[c.id], 12)}" alt=""><span>${c.name}</span>`;
+    // the dog has modules instead of hands
+    const name = c.dogName && (tryOn?.model ?? G.garage.model) === 'dog' ? c.dogName : c.name;
+    b.innerHTML = `<img src="${svgUrl(TAB_ICONS[c.id], 12)}" alt=""><span>${name}</span>`;
     b.className = c.id === garageTab ? 'on' : '';
     b.onclick = () => { sfx.click(); garageTab = c.id; renderGarage(); };
     $('garage-tabs').appendChild(b);
   }
   $('garage-items').innerHTML = '';
   const cat = G.CATEGORIES.find((c) => c.id === garageTab);
-  // a robot that is only being tried on stays on screen while its colours are browsed
-  const shownModel = tryOn ? (tryOn.cat === 'model' ? tryOn.id : tryOn.model ?? G.garage.model) : G.garage.model;
+  // Try-on: several items at once ({ model?, set: { cat: id } }), shown together on the robot;
+  // a robot that is only being tried on stays on screen while its looks are browsed
+  const shownModel = tryOn?.model ?? G.garage.model;
   const robotOnTry = shownModel !== G.garage.model;
+  const tried = tryOn?.set ?? {};
+  const look = { ...G.garage.looks[shownModel], ...tried };
+  // reads tryOn as it is after the click (not the copy taken when the cards were drawn)
+  const show = () => G.applyLook(robot, tryOn ? { model: tryOn.model ?? G.garage.model, set: tryOn.set } : null, onRobotRebuilt);
+  // the card previews show the item together with everything already tried on
+  const with_ = (id) => ({ set: { ...tried, [cat.id]: id } });
   for (const it of cat.items) {
+    if ((it.only && it.only !== shownModel) || it.not === shownModel) continue; // per-robot items
     const own = G.owns(cat.id, it.id);
-    const on = !robotOnTry && (cat.id === 'model' ? G.garage.model === it.id : G.garage.looks[shownModel][cat.id] === it.id);
-    const trying = tryOn && tryOn.cat === cat.id && tryOn.id === it.id;
+    const on = cat.id === 'model' ? G.garage.model === it.id && !robotOnTry : !robotOnTry && G.garage.looks[shownModel][cat.id] === it.id && tried[cat.id] == null;
+    const trying = cat.id === 'model' ? robotOnTry && it.id === shownModel : tried[cat.id] === it.id;
     const b = document.createElement('button');
-    b.className = (on && !trying ? 'on ' : '') + (trying ? 'preview ' : '') + (own ? '' : 'locked');
+    b.className = (on ? 'on ' : '') + (trying ? 'preview ' : '') + (own ? '' : 'locked');
     const key = `${cat.id}:${it.id}`;
-    // robots, schemes and head items are shown as 3D renders of the robot on screen
+    // robots, schemes and wearables are shown as 3D renders of the robot on screen
     const pic = cat.id === 'model' ? `<img class="thumb" src="${robotThumb(it.id)}" alt="">`
-      : cat.id === 'scheme' ? `<img class="thumb" src="${robotThumb(shownModel, { cat: 'scheme', id: it.id })}" alt="">`
-      : cat.id === 'acc' ? `<img class="thumb" src="${robotThumb(shownModel, { cat: 'acc', id: it.id }, 'head')}" alt="">`
+      : cat.id === 'scheme' ? `<img class="thumb" src="${robotThumb(shownModel, with_(it.id))}" alt="">`
+      : cat.id === 'acc' ? `<img class="thumb" src="${robotThumb(shownModel, with_(it.id), it.only ? 'body' : 'head')}" alt="">`
+      : cat.id === 'arms' ? `<img class="thumb" src="${robotThumb(shownModel, with_(it.id))}" alt="">`
+      : cat.id === 'back' ? `<img class="thumb" src="${robotThumb(shownModel, with_(it.id), 'back')}" alt="">`
       : ICONS[key] ? `<img src="${iconUrl(key)}" alt="">` : `<span class="sw" style="background:${it.id === 'rainbow' ? 'linear-gradient(135deg,#ff3a5a,#ffe100,#30d860,#2a8bff,#a04dff)' : hex(it.color ?? 0x2a2c52)}"></span>`;
     const st = on ? '<span class="st on">НАДЕТО</span>' : own ? '<span class="st own">ЕСТЬ</span>' : `<span class="st">${COIN}${it.price}</span>`;
     b.innerHTML = `<span class="pic">${pic}</span><span class="nm">${it.name}</span>${st}`;
     b.onclick = () => {
       sfx.click();
-      if (robotOnTry && cat.id !== 'model') {
-        // browsing colours on a robot that is not bought yet: preview only
-        tryOn = { cat: cat.id, id: it.id, model: shownModel };
-        G.applyLook(robot, tryOn, onRobotRebuilt);
-      } else if (own) {
-        // owned: equip right away
-        tryOn = null;
+      if (cat.id === 'model') {
+        if (own) { tryOn = null; G.choose('model', it.id, coins); }
+        else tryOn = { model: it.id, set: {} };
+      } else if (own && !robotOnTry) {
+        // owned: equip right away, the rest of the try-on stays
         G.choose(cat.id, it.id, coins);
-        G.applyLook(robot, null, onRobotRebuilt);
+        if (tryOn) { delete tryOn.set[cat.id]; if (!Object.keys(tryOn.set).length && !tryOn.model) tryOn = null; }
       } else {
-        // not owned: try it on first
-        tryOn = { cat: cat.id, id: it.id };
-        G.applyLook(robot, tryOn, onRobotRebuilt);
+        // not owned (or on a robot not bought yet): add it to the try-on
+        tryOn = { model: tryOn?.model, set: { ...tried, [cat.id]: it.id } };
       }
+      show();
       renderGarage();
     };
     $('garage-items').appendChild(b);
   }
+  // under the colour tabs: what this colour paints in the scheme of the robot on screen
+  const hint = $('garage-hint');
+  const role = G.ROLES[look.scheme ?? 'classic']?.[cat.id];
+  hint.classList.toggle('hidden', !role);
+  if (role) hint.innerHTML = `СХЕМА «${G.item('scheme', look.scheme ?? 'classic').name.toUpperCase()}»: <b>${role}</b>`;
+  // one button buys everything tried on that is not owned yet (the robot first)
+  const bill = garageBill();
   const buy = $('garage-buy');
-  buy.classList.toggle('hidden', !tryOn);
-  if (tryOn) {
-    // the robot itself is bought first when it is still on try-on
-    const it = robotOnTry ? G.item('model', shownModel) : G.item(tryOn.cat, tryOn.id);
-    const can = coins >= it.price;
+  buy.classList.toggle('hidden', !bill.items.length);
+  if (bill.items.length) {
+    const can = coins >= bill.total;
     buy.classList.toggle('poor', !can);
-    buy.innerHTML = `${can ? (robotOnTry ? `КУПИТЬ ${it.name.toUpperCase()}` : 'КУПИТЬ') : 'НЕ ХВАТАЕТ'} ${COIN}${it.price}`;
+    const what = bill.items.length > 1 ? `ВСЁ (${bill.items.length})` : robotOnTry ? G.item('model', shownModel).name.toUpperCase() : '';
+    buy.innerHTML = `${can ? `КУПИТЬ ${what}` : 'НЕ ХВАТАЕТ'} ${COIN}${bill.total}`;
   }
 }
 
+// everything on try-on that still has to be bought
+function garageBill() {
+  const items = [];
+  if (tryOn?.model && !G.owns('model', tryOn.model)) items.push(['model', tryOn.model]);
+  for (const [cat, id] of Object.entries(tryOn?.set ?? {})) if (!G.owns(cat, id)) items.push([cat, id]);
+  return { items, total: items.reduce((sum, [cat, id]) => sum + G.item(cat, id).price, 0) };
+}
+
 $('garage-buy').addEventListener('click', () => {
-  if (!tryOn) return;
-  const shown = tryOn.cat === 'model' ? tryOn.id : tryOn.model;
-  const paid = shown && shown !== G.garage.model ? G.choose('model', shown, coins) : G.choose(tryOn.cat, tryOn.id, coins);
-  if (paid < 0) { sfx.bump(); haptic('error'); toast('НЕ ХВАТАЕТ RR'); return; }
-  coins -= paid;
+  const bill = garageBill();
+  if (!bill.items.length) return;
+  if (coins < bill.total) { sfx.bump(); haptic('error'); return; }
+  // the robot first (so the rest is equipped on it), then every tried item
+  if (tryOn.model) G.choose('model', tryOn.model, coins);
+  for (const [cat, id] of Object.entries(tryOn.set)) G.choose(cat, id, coins);
+  coins -= bill.total;
   store.set('coins', coins);
   sfx.coin();
   haptic('success');
@@ -2740,7 +2771,8 @@ function frame(now) {
   updateParticles(dt);
   updateStreaks(dt);
   // animated head items (propeller, siren, radar, ...) and rainbow eyes run even in menus
-  robot.acc?.userData.tick?.(performance.now() / 1000);
+  for (const tick of robot.ticks ?? []) tick(performance.now() / 1000);
+  placeJetpack();
   if (robot.rainbow) robot.mats.eyes.color.setHSL((performance.now() / 4000) % 1, 1, 0.6);
   updateCamera(dt);
   updateWarnings();

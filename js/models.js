@@ -150,7 +150,8 @@ export function makeRobot(colors = {}, kind = 'rr') {
 // to the model (jetpack). Callers re-attach things that live on limbs.
 export function rebuildRobot(robot, kind) {
   for (const o of robot.parts) robot.model.remove(o);
-  Object.assign(robot, buildRobot(robot.model, {}, kind), { kind, acc: null });
+  // anchors the new body does not have are cleared (only the dog has a neck, tail and paws)
+  Object.assign(robot, { neck: null, tail: null, paws: null, motors: null }, buildRobot(robot.model, {}, kind), { kind, acc: null, items: [] });
 }
 
 function buildRobot(model, colors, kind) {
@@ -217,6 +218,7 @@ function buildRR(model, mats) {
     box(sh, 0.112, 0.03, 0.122, L, s * 0.035, -0.17, 0);
     box(sh, 0.07, 0.035, 0.08, D, s * 0.035, -0.37, 0);       // wrist
     box(sh, 0.11, 0.1, 0.12, Y, s * 0.035, -0.44, 0);         // hand
+    sh.userData.hand = anchor(sh, s * 0.035, -0.44, 0);
     return sh;
   });
 
@@ -237,7 +239,8 @@ function buildRR(model, mats) {
     box(head, 0.02, 0.07, 0.08, B, s * 0.142, 0.115, 0.005);
   }
 
-  return { legs, arms, head, eyes };
+  // attachment points for hand and back items (back: +z points out of the back)
+  return { legs, arms, head, eyes, hands: arms.map((a) => a.userData.hand), back: anchor(model, 0, 1.03, 0.12) };
 }
 
 // A leg of the dog: pivot (animated) -> fixed tilt -> thigh, knee pivot (animated) -> fixed bend
@@ -347,7 +350,17 @@ function buildDog(model, mats) {
   // front legs act as "arms", hind legs as "legs" for the shared animations
   const arms = [-1, 1].map((s) => dogLeg(model, mats, s * 0.2, -0.27, 0.2, 0.33, 0.39, 0.61));
   const legs = [-1, 1].map((s) => dogLeg(model, mats, s * 0.2, 0.42, 0.236, 0.63, 0.36, 0.49));
-  return { legs, arms, head, eyes: [eye] };
+  // attachment points: front paws act as hands, the back faces up, plus neck, tail and all paws
+  const back = anchor(model, 0, 0.71, 0.08);
+  back.rotation.x = -Math.PI / 2;
+  return {
+    legs, arms, head, eyes: [eye],
+    hands: arms.map((a) => a.userData.foot), back,
+    neck: anchor(model, 0, 0.6, -0.38), tail: anchor(model, 0, 0.62, 0.475),
+    // tops of the four motor cubes: front left, front right, rear left, rear right
+    motors: [[-1, -0.27], [1, -0.27], [-1, 0.42], [1, 0.42]].map(([s, z]) => anchor(model, s * 0.17, 0.66, z)),
+    paws: [...arms, ...legs].map((l) => l.userData.foot),
+  };
 }
 
 // Titan, after its reference render: wide light chest with dark shoulder joints, a lit square in
@@ -414,6 +427,7 @@ function buildTitan(model, mats) {
     box(sh, 0.03, 0.26, 0.137, L, s * 0.1, -0.25, 0);
     box(sh, 0.1, 0.03, 0.11, D, s * 0.05, -0.395, 0);             // wrist
     box(sh, 0.13, 0.11, 0.14, B, s * 0.05, -0.465, 0);            // hand
+    sh.userData.hand = anchor(sh, s * 0.05, -0.465, 0);
     return sh;
   });
 
@@ -439,7 +453,16 @@ function buildTitan(model, mats) {
   box(head, 0.16, 0.08, 0.02, W, 0, 0.065, -0.116);               // lower face
   box(head, 0.014, 0.05, 0.022, D, -0.03, 0.065, -0.117);         // seam
   box(head, 0.1, 0.03, 0.022, D, 0, 0.02, -0.117);                // chin
-  return { legs, arms, head, eyes };
+  // attachment points for hand and back items (back: +z points out of the back)
+  return { legs, arms, head, eyes, hands: arms.map((a) => a.userData.hand), back: anchor(model, 0, 1.07, 0.12) };
+}
+
+// An empty group where garage items get attached.
+function anchor(parent, x, y, z) {
+  const g = new THREE.Group();
+  g.position.set(x, y, z);
+  parent.add(g);
+  return g;
 }
 
 // Recolor a robot built by makeRobot (garage skins).
